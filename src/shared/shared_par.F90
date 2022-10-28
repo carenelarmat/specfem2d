@@ -32,11 +32,14 @@
 !========================================================================
 
 ! note: the filename ending is .F90 to have pre-compilation with pragmas
-!            (like #ifndef USE_MPI) working properly
+!            (like #ifndef WITH_MPI) working properly
 
 module constants
 
   include "constants.h"
+
+  ! proc number for MPI process
+  integer :: myrank
 
   ! a negative initial value is a convention that indicates that groups (i.e. sub-communicators, one per run) are off by default
   integer :: mygroup = -1
@@ -59,7 +62,7 @@ module shared_input_parameters
 
 ! holds input parameters given in DATA/Par_file
 
-  use constants, only: MAX_STRING_LEN
+  use constants, only: MAX_STRING_LEN, RegInt_K
 
   implicit none
 
@@ -97,13 +100,13 @@ module shared_input_parameters
   logical :: SAVE_FORWARD
 
   ! variables used for partitioning
-  integer :: NPROC, partitioning_method
+  integer :: NPROC, PARTITIONING_TYPE
 
   ! number of control nodes
-  integer :: ngnod
+  integer :: NGNOD
 
   ! number of time steps
-  integer :: NSTEP
+  integer (kind=RegInt_K) :: NSTEP
 
   ! time step size
   double precision :: DT
@@ -168,19 +171,27 @@ module shared_input_parameters
   ! acoustic forcing of an acoustic medium at a rigid interface
   logical :: ACOUSTIC_FORCING
 
+  ! noise simulations - source time function type
+  integer :: noise_source_time_function_type
+
+  ! Flag for writing moving source databases or not
+  logical :: write_moving_sources_database
+
   !#-----------------------------------------------------------------------------
   !#
   !# receivers
   !#
   !#-----------------------------------------------------------------------------
-  integer :: seismotype
+  integer :: NSIGTYPE
+  character(len=MAX_STRING_LEN) :: seismotype
+
   ! subsampling
-  integer :: subsamp_seismos
+  integer :: NTSTEP_BETWEEN_OUTPUT_SAMPLE ! depreated: subsamp_seismos, renamed to NTSTEP_BETWEEN_OUTPUT_SAMPLE
 
   ! for better accuracy of pressure output (uses 2nd time-derivatives of the initial source time function)
   logical :: USE_TRICK_FOR_BETTER_PRESSURE
 
-  integer :: NSTEP_BETWEEN_OUTPUT_SEISMOS
+  integer :: NTSTEP_BETWEEN_OUTPUT_SEISMOS ! deprecated: NSTEP_BETWEEN_OUTPUT_SEISMOS has been renamed
 
   ! Integrated energy field output
   logical :: COMPUTE_INTEGRATED_ENERGY_FIELD
@@ -215,9 +226,8 @@ module shared_input_parameters
   !#-----------------------------------------------------------------------------
   ! kernel output in case of adjoint simulation
   logical :: save_ASCII_kernels
-
-  integer :: NSTEP_BETWEEN_COMPUTE_KERNELS
-
+  integer :: NTSTEP_BETWEEN_COMPUTE_KERNELS
+  logical :: APPROXIMATE_HESS_KL
   logical :: NO_BACKWARD_RECONSTRUCTION
 
   !#-----------------------------------------------------------------------------
@@ -297,7 +307,7 @@ module shared_input_parameters
   !#
   !#-----------------------------------------------------------------------------
   ! general information during the computation and for information of the stability behavior during the simulation
-  integer :: NSTEP_BETWEEN_OUTPUT_INFO
+  integer :: NTSTEP_BETWEEN_OUTPUT_INFO
 
   ! for later check of the grid
   logical :: output_grid_Gnuplot,output_grid_ASCII
@@ -312,7 +322,7 @@ module shared_input_parameters
   !#
   !#-----------------------------------------------------------------------------
   ! time step interval for image output
-  integer :: NSTEP_BETWEEN_OUTPUT_IMAGES
+  integer :: NTSTEP_BETWEEN_OUTPUT_IMAGES
 
   ! threshold value
   double precision :: cutsnaps
@@ -372,9 +382,6 @@ module shared_parameters
 
   implicit none
 
-  ! for MPI and partitioning
-  integer :: myrank
-
   ! for Bielak condition
   logical :: add_Bielak_conditions
 
@@ -383,11 +390,6 @@ module shared_parameters
 
   ! for interpolated snapshot
   logical :: plot_lowerleft_corner_only
-
-  ! material file for changing the model parameter for inner mesh or updating the
-  ! the material for an existed mesh
-  ! (obsolete in Par_file now...)
-  !logical :: assign_external_model, READ_EXTERNAL_SEP_FILE
 
   ! to store density and velocity model
   integer, dimension(:),allocatable :: num_material
@@ -411,16 +413,60 @@ module shared_parameters
   integer :: nelmnts
 
   ! interface file data
-  integer :: nx,nz
+  integer :: nx_elem_internal,nz_elem_internal
   integer :: nxread,nzread
 
   ! from interfaces file
   integer :: max_npoints_interface,number_of_interfaces
+  integer, dimension(:), allocatable :: npoints_of_interfaces
+  double precision, dimension(:,:), allocatable :: xinterface_coords,zinterface_coords
 
   ! vertical layers
   integer :: number_of_layers
   integer, dimension(:), allocatable :: nz_layer
 
+  ! seismogram output
+  logical, parameter :: WRITE_SEISMOGRAMS_BY_MAIN = .true.
+
 end module shared_parameters
 
+!
+!========================================================================
+!
 
+module source_file_par
+
+  use constants, only: MAX_STRING_LEN
+
+  implicit none
+
+  ! source type parameters
+  integer, dimension(:),allocatable ::  source_type,time_function_type
+
+  ! location
+  double precision, dimension(:),allocatable :: x_source,z_source
+
+  ! moment tensor
+  double precision, dimension(:),allocatable :: Mxx,Mzz,Mxz
+
+  ! force
+  double precision, dimension(:),allocatable :: anglesource
+  double precision, dimension(:),allocatable :: factor
+
+  ! source parameters
+  double precision, dimension(:),allocatable :: tshift_src
+  double precision, dimension(:),allocatable :: f0_source,burst_band_width
+
+  ! horizontal and vertical velocities (for moving sources)
+  double precision, dimension(:),allocatable :: vx_source,vz_source
+
+  ! flag for fixation to surface (works only for internal meshes, not external ones)
+  logical, dimension(:),allocatable ::  source_surf
+
+  ! File name can't exceed MAX_STRING_LEN characters
+  character(len=MAX_STRING_LEN), dimension(:),allocatable :: name_of_source_file
+
+  ! Flag for moving sources
+  logical :: SOURCE_IS_MOVING
+
+end module source_file_par

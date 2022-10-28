@@ -1,5 +1,5 @@
 
-  program generate_mesh_PREM
+  program generate_mesh
 
 ! Dimitri Komatitsch, Harvard University, USA, around 1998: 2D mesh generator for the global Earth
 
@@ -115,6 +115,12 @@
   double precision, parameter :: R670   = 5711000.d0
   double precision, parameter :: RCMB   = 3479500.d0
   double precision, parameter :: RICB   = 1217500.d0
+
+! values for PREM
+!  double precision, parameter :: R670   = 5701000.d0  ! at 670 km depth
+!  double precision, parameter :: RCMB   = 3480000.d0  !   2891 km depth
+!  double precision, parameter :: RICB   = 1221500.d0
+
   double precision, parameter :: R_DOUBLING_OUTER_CORE   = RICB + 0.56*(RCMB - RICB)
 
   double precision, parameter :: PI = 3.141592653589793d0
@@ -207,6 +213,7 @@
   delta_theta = 2. * pi / dble(nspec_surf_whole_circle/2)
   size_of_a_surface_element_in_km = delta_theta*R_EARTH/1000.
 
+  print *,'Generate mesh'
   print *
   print *,'Number of elements at the surface of the whole circle = ',nspec_surf_whole_circle
   print *
@@ -225,6 +232,7 @@
 !
 
   print *,'Generating the grid for SPECFEM2D...'
+  print *
 
 ! generate only half the mesh or the whole mesh
   if (factor_divide_mesh < 1 .or. factor_divide_mesh > 2) stop 'incorrect value of factor_divide_mesh'
@@ -1294,59 +1302,63 @@
 
   if (output_gnuplot_grid) then
 
-  print *
-  print *,'Writing the grid in GNUPLOT format...'
+    print *
+    print *,'Writing the grid in GNUPLOT format...'
 
-  open(unit=20,file='gridfile.gnu',status='unknown')
+    open(unit=20,file='gridfile.gnu',status='unknown')
 
-  do ispec=1,nspec
+    do ispec=1,nspec
 
-! draw the four edges of each element (using straight lines to simplify)
-    ia1 = 1
-    ia2 = 2
-    write(20,15) sngl(xcoord(ia1,ispec)),sngl(ycoord(ia1,ispec))
-    write(20,15) sngl(xcoord(ia2,ispec)),sngl(ycoord(ia2,ispec))
-    write(20,10)
+  ! draw the four edges of each element (using straight lines to simplify)
+      ia1 = 1
+      ia2 = 2
+      write(20,15) sngl(xcoord(ia1,ispec)),sngl(ycoord(ia1,ispec))
+      write(20,15) sngl(xcoord(ia2,ispec)),sngl(ycoord(ia2,ispec))
+      write(20,10)
 
-    ia1 = 2
-    ia2 = 3
-    write(20,15) sngl(xcoord(ia1,ispec)),sngl(ycoord(ia1,ispec))
-    write(20,15) sngl(xcoord(ia2,ispec)),sngl(ycoord(ia2,ispec))
-    write(20,10)
+      ia1 = 2
+      ia2 = 3
+      write(20,15) sngl(xcoord(ia1,ispec)),sngl(ycoord(ia1,ispec))
+      write(20,15) sngl(xcoord(ia2,ispec)),sngl(ycoord(ia2,ispec))
+      write(20,10)
 
-    ia1 = 3
-    ia2 = 4
-    write(20,15) sngl(xcoord(ia1,ispec)),sngl(ycoord(ia1,ispec))
-    write(20,15) sngl(xcoord(ia2,ispec)),sngl(ycoord(ia2,ispec))
-    write(20,10)
+      ia1 = 3
+      ia2 = 4
+      write(20,15) sngl(xcoord(ia1,ispec)),sngl(ycoord(ia1,ispec))
+      write(20,15) sngl(xcoord(ia2,ispec)),sngl(ycoord(ia2,ispec))
+      write(20,10)
 
-    ia1 = 4
-    ia2 = 1
-    write(20,15) sngl(xcoord(ia1,ispec)),sngl(ycoord(ia1,ispec))
-    write(20,15) sngl(xcoord(ia2,ispec)),sngl(ycoord(ia2,ispec))
-    write(20,10)
+      ia1 = 4
+      ia2 = 1
+      write(20,15) sngl(xcoord(ia1,ispec)),sngl(ycoord(ia1,ispec))
+      write(20,15) sngl(xcoord(ia2,ispec)),sngl(ycoord(ia2,ispec))
+      write(20,10)
 
-  enddo
+    enddo
 
-  close(20)
+    close(20)
 
-! cree le script de dessin pour gnuplot
-  open(unit=20,file='plotgrid.gnu',status='unknown')
-  write(20,*) '#set term postscript landscape monochrome solid "Helvetica" 22'
-  write(20,*) '#set output "grille.ps"'
-  write(20,*) 'set term x11'
-  write(20,*) 'set size ratio -1'
-  write(20,*) 'plot "gridfile.gnu" title "Macroblocs mesh" w l'
-  write(20,*) 'pause -1 "Hit any key..."'
-  close(20)
+  ! cree le script de dessin pour gnuplot
+    open(unit=20,file='plotgrid.gnu',status='unknown')
+    write(20,*) '#set term postscript landscape monochrome solid "Helvetica" 22'
+    write(20,*) '#set output "grille.ps"'
+    write(20,*) 'set term x11'
+    write(20,*) 'set size ratio -1'
+    write(20,*) 'plot "gridfile.gnu" title "Macroblocs mesh" w l'
+    write(20,*) 'pause -1 "Hit any key..."'
+    close(20)
 
-  print *,'Done writing the grid in GNUPLOT format'
-  print *
+    print *,'Done writing the grid in GNUPLOT format'
+    print *
 
  10   format('')
  15   format(e12.5,1x,e12.5)
 
   endif
+
+  print *
+  print *,'All Done'
+  print *
 
   end
 

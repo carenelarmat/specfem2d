@@ -33,7 +33,7 @@
 
   subroutine compute_forces_viscoelastic_main()
 
-  use constants, only: SOURCE_IS_MOVING,USE_ENFORCE_FIELDS,ALPHA_LDDRK,BETA_LDDRK
+  use constants, only: USE_ENFORCE_FIELDS
   use specfem_par
   use specfem_par_noise
 
@@ -51,7 +51,7 @@
 
   ! enforces vanishing wavefields on axis
   if (AXISYM) then
-    call enforce_zero_radial_displacements_on_the_axis()
+    call enforce_zero_radial_displacements_on_the_axis(displ_elastic,veloc_elastic,accel_elastic)
   endif
 
   ! distinguishes two runs: for elements on MPI interfaces (outer), and elements within the partitions (inner)
@@ -59,8 +59,9 @@
 
     ! main solver for the elastic elements
     ! visco-elastic term
-    call compute_forces_viscoelastic(accel_elastic,veloc_elastic,displ_elastic,displ_elastic_old,dux_dxl_old,duz_dzl_old, &
-                                     dux_dzl_plus_duz_dxl_old,PML_BOUNDARY_CONDITIONS,e1,e11,e13,iphase)
+    call compute_forces_viscoelastic(accel_elastic,veloc_elastic,displ_elastic, &
+                                     displ_elastic_old,dux_dxl_old,duz_dzl_old,dux_dzl_plus_duz_dxl_old, &
+                                     PML_BOUNDARY_CONDITIONS,e1,e11,e13,iphase)
 
     ! computes additional contributions to acceleration field
     if (iphase == 1) then
@@ -93,14 +94,14 @@
           ! earthquake/force source
           if (SIMULATION_TYPE == 1) then
             if (SOURCE_IS_MOVING) then
-              call compute_add_sources_viscoelastic_moving_source(accel_elastic,it,i_stage)
+              call compute_add_sources_viscoelastic_moving_sources(accel_elastic,it,i_stage)
             else
               call compute_add_sources_viscoelastic(accel_elastic,it,i_stage)
             endif
           endif
 
         case (1)
-          ! noise source at master station
+          ! noise source at main station
           call add_point_source_noise()
 
         case (2)
@@ -109,7 +110,7 @@
         end select
 
         ! adjoint wavefield source
-        if (SIMULATION_TYPE == 3) then
+        if (SIMULATION_TYPE /= 1) then
           ! adjoint sources
           call compute_add_sources_viscoelastic_adjoint()
         endif
@@ -119,10 +120,10 @@
 
     ! enforces vanishing wavefields on axis
     if (AXISYM) then
-      call enforce_zero_radial_displacements_on_the_axis()
+      call enforce_zero_radial_displacements_on_the_axis(displ_elastic,veloc_elastic,accel_elastic)
     endif
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     ! LDDRK
     ! daniel: when is this needed? veloc_elastic at it == 1 and i_stage == 1 is zero for non-initialfield simulations.
     !         todo - please check...
@@ -158,7 +159,7 @@
   ! saves boundary condition for reconstruction
   if (PML_BOUNDARY_CONDITIONS) then
     if (nglob_interface > 0) then
-      if (SAVE_FORWARD .and. SIMULATION_TYPE == 1) then
+      if (SAVE_FORWARD .and. SIMULATION_TYPE == 1 .and. (.not. NO_BACKWARD_RECONSTRUCTION)) then
         do i = 1, nglob_interface
           write(71) accel_elastic(1,point_interface(i)),accel_elastic(2,point_interface(i)), &
                     veloc_elastic(1,point_interface(i)),veloc_elastic(2,point_interface(i)), &
@@ -191,6 +192,11 @@
   case (3)
     ! RK
     call update_veloc_elastic_RK()
+  case (4)
+    ! symplectic PEFRL
+    call update_veloc_elastic_symplectic()
+  case default
+    call stop_the_code('Time scheme not implemented yet in compute_forces_viscoelastic_main()')
   end select
 
   end subroutine compute_forces_viscoelastic_main
@@ -215,10 +221,14 @@
   integer :: iphase
 
   ! checks if anything to do
-  if (SIMULATION_TYPE /= 3 ) return
+  if (SIMULATION_TYPE /= 3) return
 
   ! checks if anything to do in this slice
   if (.not. any_elastic) return
+
+  ! safety check
+  if (SOURCE_IS_MOVING) &
+    stop 'Option SOURCE_IS_MOVING is not implemented yet for kernel simulations (SIMULATION_TYPE == 3)'
 
   ! timing
   if (UNDO_ATTENUATION_AND_OR_PML) then
@@ -233,7 +243,7 @@
     ! example: NSTEP = 800 -> 800,799,..,1
     it_temp = NSTEP - it + 1
     ! time scheme
-    istage_temp = stage_time_scheme - i_stage + 1
+    istage_temp = NSTAGE_TIME_SCHEME - i_stage + 1
   endif
 
   ! main solver for the elastic elements
@@ -243,12 +253,17 @@
     call rebuild_value_on_PML_interface_viscoelastic(it_temp)
   endif
 
+  ! enforces vanishing wavefields on axis
+  if (AXISYM) then
+    call enforce_zero_radial_displacements_on_the_axis(b_displ_elastic,b_veloc_elastic,b_accel_elastic)
+  endif
+
   ! distinguishes two runs: for elements on MPI interfaces (outer), and elements within the partitions (inner)
   do iphase = 1,2
 
-    call compute_forces_viscoelastic(b_accel_elastic,b_veloc_elastic,b_displ_elastic,b_displ_elastic_old, &
-                                     b_dux_dxl_old,b_duz_dzl_old, &
-                                     b_dux_dzl_plus_duz_dxl_old,.false.,b_e1,b_e11,b_e13,iphase)
+    call compute_forces_viscoelastic(b_accel_elastic,b_veloc_elastic,b_displ_elastic, &
+                                     b_displ_elastic_old,b_dux_dxl_old,b_duz_dzl_old,b_dux_dzl_plus_duz_dxl_old, &
+                                     .false.,b_e1,b_e11,b_e13,iphase)
 
     ! computes additional contributions
     if (iphase == 1) then
@@ -264,9 +279,6 @@
       ! PML boundary
       if (PML_BOUNDARY_CONDITIONS) then
         call pml_boundary_elastic(b_accel_elastic,b_veloc_elastic,b_displ_elastic,b_displ_elastic_old)
-      endif
-
-      if (PML_BOUNDARY_CONDITIONS) then
         call rebuild_value_on_PML_interface_viscoelastic(it_temp)
       endif
 
@@ -279,11 +291,6 @@
       if (coupled_elastic_poro) then
         call compute_coupling_viscoelastic_po_backward()
       endif
-
-      ! only on forward arrays so far implemented...
-      !if (AXISYM) then
-      !  call enforce_zero_radial_displacements_on_the_axis()
-      !endif
 
       ! add force source
       if (.not. initialfield) then
@@ -304,7 +311,12 @@
 
     endif ! iphase
 
-#ifdef USE_MPI
+    ! enforces vanishing wavefields on axis
+    if (AXISYM) then
+      call enforce_zero_radial_displacements_on_the_axis(b_displ_elastic,b_veloc_elastic,b_accel_elastic)
+    endif
+
+#ifdef WITH_MPI
     ! assembling accel_elastic for elastic elements
     if (NPROC > 1 .and. ninterface_elastic > 0) then
       if (iphase == 1) then
@@ -330,6 +342,9 @@
   case (1)
     ! Newmark
     call update_veloc_elastic_Newmark_backward()
+  case (4)
+    ! symplectic PEFRL
+    call update_veloc_elastic_symplectic_backward()
   case default
     call stop_the_code('Time stepping scheme not implemented yet in viscoelastic backward routine')
   end select

@@ -33,7 +33,7 @@
 
   subroutine compute_forces_viscoacoustic_main()
 
-  use constants, only: SOURCE_IS_MOVING,USE_ENFORCE_FIELDS,ALPHA_LDDRK,BETA_LDDRK,ZERO,USE_A_STRONG_FORMULATION_FOR_E1
+  use constants, only: USE_ENFORCE_FIELDS,ALPHA_LDDRK,BETA_LDDRK,ZERO,USE_A_STRONG_FORMULATION_FOR_E1
 
   use specfem_par
 
@@ -63,17 +63,17 @@
 
         call compute_attenuation_acoustic_integration(potential_acoustic,ispec_is_acoustic,PML_BOUNDARY_CONDITIONS,iphase,dot_e1)
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
         ! assembling potential_dot_dot or b_potential_dot_dot for acoustic elements
         if (NPROC > 1 .and. ninterface_acoustic > 0) then
-        ! loop over relaxation mechanisms
-        do i_sls = 1,N_SLS
-          if (iphase == 1) then
-            call assemble_MPI_scalar_ac_s_e1(dot_e1(:,i_sls),dot_e1,0)
-          else
-            call assemble_MPI_scalar_ac_w_e1(dot_e1(:,i_sls),dot_e1,0)
-          endif
-        enddo
+          ! loop over relaxation mechanisms
+          do i_sls = 1,N_SLS
+            if (iphase == 1) then
+              call assemble_MPI_scalar_ac_s_e1(dot_e1(:,i_sls),dot_e1,0)
+            else
+              call assemble_MPI_scalar_ac_w_e1(dot_e1(:,i_sls),dot_e1,0)
+            endif
+          enddo
         endif
 #endif
 
@@ -99,12 +99,12 @@
 
   endif
 
-    ! distinguishes two runs: for elements on MPI interfaces, and elements within the partitions
-    do iphase = 1,2
+  ! distinguishes two runs: for elements on MPI interfaces, and elements within the partitions
+  do iphase = 1,2
 
     ! main solver for the acoustic elements
     call compute_forces_viscoacoustic(potential_dot_dot_acoustic,potential_dot_acoustic,potential_acoustic, &
-                                 PML_BOUNDARY_CONDITIONS,potential_acoustic_old,iphase,e1_acous_sf,sum_forces_old)
+                                      PML_BOUNDARY_CONDITIONS,potential_acoustic_old,iphase,e1_acous_sf,sum_forces_old)
 
     ! PML boundary conditions enforces zero potentials on boundary
     if (PML_BOUNDARY_CONDITIONS) then
@@ -131,41 +131,30 @@
 
       ! add coupling with the elastic side
       if (coupled_acoustic_elastic) then
-        if (SIMULATION_TYPE == 1) then
-          call compute_coupling_acoustic_el(displ_elastic,displ_elastic_old,potential_dot_dot_acoustic,dot_e1)
-        endif
-
-        ! coupling for adjoint wavefields
-        if (SIMULATION_TYPE == 3) then
-          ! note: handles adjoint runs coupling between adjoint potential and adjoint elastic wavefield
-          !       adjoint definition: \partial_t^2 \bfs^\dagger = - \frac{1}{\rho} \bfnabla \phi^\dagger
-          !
-          ! coupling with adjoint wavefields
-          call compute_coupling_acoustic_el(accel_elastic_adj_coupling,displ_elastic_old,potential_dot_dot_acoustic,dot_e1)
-        endif
+        call compute_coupling_acoustic_el()
       endif
 
       ! add coupling with the poroelastic side
       if (coupled_acoustic_poro) then
-        call compute_coupling_acoustic_po(dot_e1)
+        call compute_coupling_acoustic_po()
       endif
 
       ! add force source
       if (.not. initialfield) then
         if (SIMULATION_TYPE == 1) then
           if (SOURCE_IS_MOVING) then
-            call compute_add_sources_acoustic_moving_source(potential_dot_dot_acoustic,it,i_stage)
+            call compute_add_sources_acoustic_moving_sources(potential_dot_dot_acoustic,it,i_stage)
           else
             call compute_add_sources_acoustic(potential_dot_dot_acoustic,it,i_stage)
           endif
-        else if (SIMULATION_TYPE == 3) then
+        else
           ! adjoint sources
           call compute_add_sources_acoustic_adjoint()
         endif
       endif
     endif ! iphase == 1
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     ! assembling potential_dot_dot or b_potential_dot_dot for acoustic elements
     if (NPROC > 1 .and. ninterface_acoustic > 0) then
       if (iphase == 1) then
@@ -188,7 +177,7 @@
   ! PML saves interface values
   if (PML_BOUNDARY_CONDITIONS) then
     if (nglob_interface > 0) then
-      if (SAVE_FORWARD .and. SIMULATION_TYPE == 1) then
+      if (SAVE_FORWARD .and. SIMULATION_TYPE == 1 .and. (.not. NO_BACKWARD_RECONSTRUCTION)) then
         do i = 1, nglob_interface
           write(72) potential_dot_dot_acoustic(point_interface(i)), potential_dot_acoustic(point_interface(i)), &
                     potential_acoustic(point_interface(i))
@@ -226,6 +215,9 @@
   case (3)
     ! RK scheme
     call update_veloc_acoustic_RK()
+  case (4)
+    ! symplectic PEFRL
+    call update_veloc_acoustic_symplectic()
   case default
     call stop_the_code('Invalid time stepping scheme for compute forces routine!')
   end select
@@ -253,7 +245,7 @@
   integer :: iphase
 
   ! checks
-  if (SIMULATION_TYPE /= 3 ) return
+  if (SIMULATION_TYPE /= 3) return
 
   ! checks if anything to do in this slice
   if (.not. any_acoustic) return
@@ -270,7 +262,7 @@
     ! time increment
     it_temp = NSTEP - it + 1
     ! time scheme
-    istage_temp = stage_time_scheme - i_stage + 1
+    istage_temp = NSTAGE_TIME_SCHEME - i_stage + 1
   endif
 
   ! PML restores interface values
@@ -322,7 +314,7 @@
 
       ! add coupling with the elastic side
       if (coupled_acoustic_elastic) then
-        call compute_coupling_acoustic_el_backward(b_displ_elastic,b_potential_dot_dot_acoustic)
+        call compute_coupling_acoustic_el_backward()
       endif
 
       ! add coupling with the poroelastic side
@@ -343,7 +335,7 @@
 
     endif ! iphase == 1
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     ! assembling potential_dot_dot or b_potential_dot_dot for acoustic elements
     if (NPROC > 1 .and. ninterface_acoustic > 0) then
       if (iphase == 1) then
@@ -369,6 +361,9 @@
   case (1)
     ! Newmark
     call update_veloc_acoustic_Newmark_backward()
+  case (4)
+    ! symplectic PEFRL
+    call update_veloc_acoustic_symplectic_backward()
   case default
     call stop_the_code('Sorry, time stepping scheme not implemented yet for backward computations')
   end select
@@ -377,6 +372,4 @@
   call enforce_acoustic_free_surface(b_potential_dot_dot_acoustic,b_potential_dot_acoustic,b_potential_acoustic)
 
   end subroutine compute_forces_viscoacoustic_main_backward
-
-
 

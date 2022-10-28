@@ -39,10 +39,10 @@
 
   implicit none
 
-  integer iin
-  logical ignore_junk
-  integer value_to_read
-  character(len=MAX_STRING_LEN) string_read
+  integer :: iin
+  logical :: ignore_junk
+  integer :: value_to_read
+  character(len=MAX_STRING_LEN) :: string_read
 
   call read_next_line(iin,ignore_junk,string_read)
   read(string_read,*) value_to_read
@@ -57,10 +57,10 @@
 
   implicit none
 
-  integer iin
-  logical ignore_junk
-  double precision value_to_read
-  character(len=MAX_STRING_LEN) string_read
+  integer :: iin
+  logical :: ignore_junk
+  double precision :: value_to_read
+  character(len=MAX_STRING_LEN) :: string_read
 
   call read_next_line(iin,ignore_junk,string_read)
   read(string_read,*) value_to_read
@@ -75,10 +75,10 @@
 
   implicit none
 
-  integer iin
-  logical ignore_junk
-  logical value_to_read
-  character(len=MAX_STRING_LEN) string_read
+  integer :: iin
+  logical :: ignore_junk
+  logical :: value_to_read
+  character(len=MAX_STRING_LEN) :: string_read
 
   call read_next_line(iin,ignore_junk,string_read)
   read(string_read,*) value_to_read
@@ -93,10 +93,10 @@
 
   implicit none
 
-  integer iin
-  logical ignore_junk
-  character(len=MAX_STRING_LEN) value_to_read
-  character(len=MAX_STRING_LEN) string_read
+  integer :: iin
+  logical :: ignore_junk
+  character(len=MAX_STRING_LEN) :: value_to_read
+  character(len=MAX_STRING_LEN) :: string_read
 
   call read_next_line(iin,ignore_junk,string_read)
   read(string_read,'(a)') value_to_read
@@ -111,10 +111,10 @@
 
   implicit none
 
-  integer iin
-  logical ignore_junk
-  double precision value_to_read_1,value_to_read_2
-  character(len=MAX_STRING_LEN) string_read
+  integer :: iin
+  logical :: ignore_junk
+  double precision :: value_to_read_1,value_to_read_2
+  character(len=MAX_STRING_LEN) :: string_read
 
   call read_next_line(iin,ignore_junk,string_read)
   read(string_read,*) value_to_read_1,value_to_read_2
@@ -129,10 +129,10 @@
 
   implicit none
 
-  logical ignore_junk
-  character(len=MAX_STRING_LEN) string_read
+  logical :: ignore_junk
+  character(len=MAX_STRING_LEN) :: string_read
 
-  integer ios,iin,index_equal_sign
+  integer :: ios,iin,index_equal_sign
 
   do
     ! daniel: actually MAX_STRING_LEN set to 512...
@@ -189,10 +189,10 @@
 
   implicit none
 
-  integer value_to_read
-  character(len=*) name
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  integer :: value_to_read
+  character(len=*) :: name
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read(string_read, len(string_read), name, len(name), ierr)
@@ -209,10 +209,10 @@
 
   implicit none
 
-  double precision value_to_read
-  character(len=*) name
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  double precision :: value_to_read
+  character(len=*) :: name
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read(string_read, len(string_read), name, len(name), ierr)
@@ -229,10 +229,10 @@
 
   implicit none
 
-  logical value_to_read
-  character(len=*) name
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  logical :: value_to_read
+  character(len=*) :: name
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read(string_read, len(string_read), name, len(name), ierr)
@@ -249,10 +249,10 @@
 
   implicit none
 
-  character(len=*) value_to_read
-  character(len=*) name
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  character(len=*) :: value_to_read
+  character(len=*) :: name
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read(string_read, len(string_read), name, len(name), ierr)
@@ -269,10 +269,10 @@
 
   implicit none
 
-  integer value_to_read
-  character(len=*) name
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  integer :: value_to_read
+  character(len=*) :: name
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read_nextparam(string_read, len(string_read), name, len(name), ierr)
@@ -289,10 +289,10 @@
 
   implicit none
 
-  double precision value_to_read
-  character(len=*) name
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  double precision :: value_to_read
+  character(len=*) :: name
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read_nextparam(string_read, len(string_read), name, len(name), ierr)
@@ -309,10 +309,10 @@
 
   implicit none
 
-  logical value_to_read
-  character(len=*) name
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  logical :: value_to_read
+  character(len=*) :: name
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read_nextparam(string_read, len(string_read), name, len(name), ierr)
@@ -325,19 +325,19 @@
 !--------------------
 
   subroutine read_material_parameters_p(i,icodematread,val0read,val1read,val2read,val3read, &
-                         val4read,val5read,val6read,val7read,val8read,val9read,val10read, &
-                         val11read,val12read)
+                                        val4read,val5read,val6read,val7read,val8read,val9read,val10read, &
+                                        val11read,val12read)
 
   use constants, only: MAX_STRING_LEN
 
   implicit none
 
-  integer i,icodematread
-  double precision val0read,val1read,val2read,val3read,val4read,val5read,val6read,val7read, &
-                   val8read,val9read,val10read,val11read,val12read
+  integer :: i,icodematread
+  double precision :: val0read,val1read,val2read,val3read,val4read,val5read,val6read,val7read, &
+                      val8read,val9read,val10read,val11read,val12read
 
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read_nextline(string_read, len(string_read), ierr)
@@ -346,7 +346,7 @@
   !print *,trim(string_read)
 
   read(string_read,*,iostat=ierr) i,icodematread,val0read,val1read,val2read,val3read,val4read,val5read, &
-                      val6read,val7read,val8read,val9read,val10read,val11read,val12read
+                                  val6read,val7read,val8read,val9read,val10read,val11read,val12read
 
   if (ierr /= 0) call stop_the_code('error reading material parameters line')
 
@@ -355,15 +355,15 @@
 !--------------------
 
   subroutine read_region_coordinates_p(value_to_read_1,value_to_read_2, &
-                          value_to_read_3,value_to_read_4,value_to_read_5)
+                                       value_to_read_3,value_to_read_4,value_to_read_5)
 
   use constants, only: MAX_STRING_LEN
 
   implicit none
 
-  integer value_to_read_1,value_to_read_2,value_to_read_3,value_to_read_4,value_to_read_5
-  character(len=MAX_STRING_LEN) string_read
-  integer ierr
+  integer :: value_to_read_1,value_to_read_2,value_to_read_3,value_to_read_4,value_to_read_5
+  character(len=MAX_STRING_LEN) :: string_read
+  integer :: ierr
   common /param_err_common/ ierr
 
   call param_read_nextline(string_read, len(string_read), ierr)
@@ -377,101 +377,6 @@
 
   end subroutine read_region_coordinates_p
 
-!--------------------
-
-subroutine open_parameter_file_from_master_only()
-
-  use constants, only: MAX_STRING_LEN,IN_DATA_FILES
-
-  implicit none
-
-  character(len=MAX_STRING_LEN) :: filename_main,filename_run0001
-  logical :: exists_main_Par_file,exists_run0001_Par_file
-  integer :: ier
-
-  filename_main = IN_DATA_FILES(1:len_trim(IN_DATA_FILES))//'Par_file'
-
-! also see if we are running several independent runs in parallel
-! to do so, add the right directory for that run for the master process only here
-  filename_run0001 = 'run0001/'//filename_main(1:len_trim(filename_main))
-  call param_open(filename_main, len(filename_main), ier)
-  if (ier == 0) then
-    exists_main_Par_file = .true.
-    call close_parameter_file()
-  else
-    exists_main_Par_file    = .false.
-  endif
-  call param_open(filename_run0001, len(filename_run0001), ier)
-  if (ier == 0) then
-    exists_run0001_Par_file = .true.
-    call close_parameter_file()
-  else
-    exists_run0001_Par_file = .false.
-  endif
-
-  !if (exists_main_Par_file .and. exists_run0001_Par_file) then ! TODO why is it like that in the 3D version??
-  !  print *
-  !  print *,'cannot have both DATA/Par_file and run0001/DATA/Par_file present, please remove one of them'
-  !  stop 'error: two different copies of the Par_file'
-  !endif
-
-  call param_open(filename_main, len(filename_main), ier)
-  if (ier /= 0) then
-    call param_open(filename_run0001, len(filename_run0001), ier)
-    if (ier /= 0) then
-      print *
-      print *,'opening file failed, please check your file path and run-directory.'
-      call stop_the_code('error opening Par_file')
-    endif
-  endif
-
-  end subroutine open_parameter_file_from_master_only
-
-!--------------------
-
-
-  subroutine open_parameter_file()
-
-  use constants, only: MAX_STRING_LEN,mygroup,IN_DATA_FILES
-  use shared_parameters, only: NUMBER_OF_SIMULTANEOUS_RUNS
-
-  implicit none
-
-  integer ierr
-  common /param_err_common/ ierr
-  character(len=MAX_STRING_LEN) filename,path_to_add
-
-  ! to use c routines
-  filename = trim(IN_DATA_FILES)//'Par_file'
-
-  ! see if we are running several independent runs in parallel
-  ! if so, add the right directory for that run
-  ! (group numbers start at zero, but directory names start at run0001, thus we add one)
-  ! a negative value for "mygroup" is a convention that indicates that groups (i.e. sub-communicators, one per run) are off
-  if (NUMBER_OF_SIMULTANEOUS_RUNS > 1 .and. mygroup >= 0) then
-    write(path_to_add,"('run',i4.4,'/')") mygroup + 1
-    filename = path_to_add(1:len_trim(path_to_add))//filename(1:len_trim(filename))
-  endif
-
-  call param_open(filename, len_trim(filename), ierr)
-  if (ierr /= 0) then
-    print *
-    print *,'opening file failed, please check your file path and run-directory.'
-    call stop_the_code('error opening Par_file')
-  endif
-
-  end subroutine open_parameter_file
-
-!--------------------
-
-  subroutine close_parameter_file()
-
-  implicit none
-
-  ! to use C routines
-  call param_close()
-
-  end subroutine close_parameter_file
 
 !--------------------
 
@@ -479,7 +384,7 @@ subroutine open_parameter_file_from_master_only()
 
   implicit none
 
-  integer ierr
+  integer :: ierr
   common /param_err_common/ ierr
 
   err_occurred = ierr

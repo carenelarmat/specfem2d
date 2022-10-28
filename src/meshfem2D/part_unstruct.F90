@@ -150,11 +150,13 @@
   implicit none
   integer, intent(in)  :: nparts
 
-  integer  :: num_glob, num_part
+  integer :: num_glob, num_part
   integer, dimension(0:nparts-1)  :: num_loc
+  integer :: ier
 
-
-  allocate(glob2loc_elmnts(0:nelmnts-1))
+  allocate(glob2loc_elmnts(0:nelmnts-1),stat=ier)
+  if (ier /= 0) stop 'Error allocating array glob2loc_elmnts'
+  glob2loc_elmnts(:) = -1
 
   ! initializes number of local elements per partition
   do num_part = 0, nparts-1
@@ -197,22 +199,20 @@
   allocate(glob2loc_nodes_nparts(0:nnodes))
 
   size_glob2loc_nodes = 0
-
   parts_node(:) = 0
 
-
   do num_node = 0, nnodes-1
-     glob2loc_nodes_nparts(num_node) = size_glob2loc_nodes
-     do el = 0, nnodes_elmnts(num_node)-1
-        parts_node(part(nodes_elmnts(el+MAX_NSIZE_SHARED*num_node))) = 1
-     enddo
+    glob2loc_nodes_nparts(num_node) = size_glob2loc_nodes
+    do el = 0, nnodes_elmnts(num_node)-1
+      parts_node(part(nodes_elmnts(el+MAX_NSIZE_SHARED*num_node))) = 1
+    enddo
 
-     do num_part = 0, nparts-1
-        if (parts_node(num_part) == 1) then
-           size_glob2loc_nodes = size_glob2loc_nodes + 1
-           parts_node(num_part) = 0
-        endif
-     enddo
+    do num_part = 0, nparts-1
+      if (parts_node(num_part) == 1) then
+        size_glob2loc_nodes = size_glob2loc_nodes + 1
+        parts_node(num_part) = 0
+      endif
+    enddo
 
   enddo
 
@@ -222,27 +222,24 @@
   allocate(glob2loc_nodes(0:glob2loc_nodes_nparts(nnodes)-1))
 
   glob2loc_nodes(0) = 0
-
   parts_node(:) = 0
   num_parts(:) = 0
   size_glob2loc_nodes = 0
 
-
   do num_node = 0, nnodes-1
-     do el = 0, nnodes_elmnts(num_node)-1
-        parts_node(part(nodes_elmnts(el+MAX_NSIZE_SHARED*num_node))) = 1
-     enddo
-     do num_part = 0, nparts-1
+    do el = 0, nnodes_elmnts(num_node)-1
+      parts_node(part(nodes_elmnts(el+MAX_NSIZE_SHARED*num_node))) = 1
+    enddo
 
-        if (parts_node(num_part) == 1) then
-           glob2loc_nodes_parts(size_glob2loc_nodes) = num_part
-           glob2loc_nodes(size_glob2loc_nodes) = num_parts(num_part)
-           size_glob2loc_nodes = size_glob2loc_nodes + 1
-           num_parts(num_part) = num_parts(num_part) + 1
-           parts_node(num_part) = 0
-        endif
-
-     enddo
+    do num_part = 0, nparts-1
+      if (parts_node(num_part) == 1) then
+        glob2loc_nodes_parts(size_glob2loc_nodes) = num_part
+        glob2loc_nodes(size_glob2loc_nodes) = num_parts(num_part)
+        size_glob2loc_nodes = size_glob2loc_nodes + 1
+        num_parts(num_part) = num_parts(num_part) + 1
+        parts_node(num_part) = 0
+      endif
+    enddo
   enddo
 
   end subroutine construct_glob2loc_nodes
@@ -458,7 +455,7 @@
   ! Write elements (their nodes) pertaining to iproc partition in the corresponding Database
   !--------------------------------------------------
   subroutine write_partition_database(IIN_database, iproc, nspec, &
-                                      num_modele, num_pml, ngnod, num_phase)
+                                      num_modele, num_pml, NGNOD, num_phase)
 
   use part_unstruct_par, only: nelmnts,elmnts,part, &
     glob2loc_nodes_nparts,glob2loc_nodes_parts,glob2loc_nodes,glob2loc_elmnts
@@ -470,32 +467,33 @@
   integer, intent(inout)  :: nspec
   integer, dimension(1:nelmnts)  :: num_modele
   integer, dimension(1:nelmnts)  :: num_pml
-  integer, intent(in)  :: ngnod
+  integer, intent(in)  :: NGNOD
 
+  ! local parameters
   integer  :: i,j,k
-  integer, dimension(0:ngnod-1)  :: loc_nodes
+  integer, dimension(0:NGNOD-1)  :: loc_nodes
 
   if (num_phase == 1) then
-
-     nspec = 0
-
-     do i = 0, nelmnts-1
-        if (part(i) == iproc) nspec = nspec + 1
-     enddo
+    ! only counts number of elements for this given partition iproc
+    nspec = 0
+    do i = 0, nelmnts-1
+      if (part(i) == iproc) nspec = nspec + 1
+    enddo
 
   else
-     do i = 0, nelmnts-1
-        if (part(i) == iproc) then
-
-           do j = 0, ngnod-1
-              do k = glob2loc_nodes_nparts(elmnts(i*ngnod+j)), glob2loc_nodes_nparts(elmnts(i*ngnod+j)+1)-1
-                 if (glob2loc_nodes_parts(k) == iproc) loc_nodes(j) = glob2loc_nodes(k)
-              enddo
-           enddo
-           write(IIN_database) glob2loc_elmnts(i)+1, num_modele(i+1), (loc_nodes(k)+1, k=0,ngnod-1), num_pml(i+1)
-        endif
-     enddo
-
+    ! saves array to file
+    do i = 0, nelmnts-1
+      if (part(i) == iproc) then
+        ! sets element node indices
+        do j = 0, NGNOD-1
+          do k = glob2loc_nodes_nparts(elmnts(i*NGNOD+j)), glob2loc_nodes_nparts(elmnts(i*NGNOD+j)+1)-1
+            if (glob2loc_nodes_parts(k) == iproc) loc_nodes(j) = glob2loc_nodes(k)
+          enddo
+        enddo
+        ! writes element entry to file
+        write(IIN_database) glob2loc_elmnts(i)+1, num_modele(i+1), (loc_nodes(k)+1, k=0,NGNOD-1), num_pml(i+1)
+      endif
+    enddo
   endif
 
   end subroutine write_partition_database
@@ -508,7 +506,7 @@
   ! Write interfaces (element and common nodes) pertaining to iproc partition in the corresponding Database
   !--------------------------------------------------
   subroutine write_interfaces_database(IIN_database, nparts, iproc, &
-                        my_ninterface, my_interfaces, my_nb_interfaces, num_phase)
+                                       my_ninterface, my_interfaces, my_nb_interfaces, num_phase)
 
   use part_unstruct_par, only: ninterfaces,tab_size_interfaces,tab_interfaces, &
     glob2loc_elmnts,glob2loc_nodes_nparts,glob2loc_nodes_parts,glob2loc_nodes
@@ -711,9 +709,9 @@
   ! Under development : excluding points that have two different normals in two different elements.
   !--------------------------------------------------
 
-  subroutine merge_abs_boundaries(nbmodels, phi_material, num_material, ngnod)
+  subroutine merge_abs_boundaries(nbmodels, phi_material, num_material, NGNOD)
 
-  use constants, only: IEDGE1,IEDGE2,IEDGE3,IEDGE4,NGLLX,NGLLZ
+  use constants, only: IEDGE1,IEDGE2,IEDGE3,IEDGE4,NGLLX,NGLLZ,IMAIN,myrank
 
   use part_unstruct_par, only: nelmnts,elmnts,nelemabs,nelemabs_merge,abs_surface, &
     abs_surface_char,abs_surface_merge,abs_surface_merge,abs_surface_type, &
@@ -722,7 +720,7 @@
 
   implicit none
 
-  integer, intent(in)  :: ngnod
+  integer, intent(in)  :: NGNOD
   integer  :: nbmodels
   double precision, dimension(nbmodels), intent(in)  :: phi_material
   integer, dimension(1:nelmnts), intent(in)  :: num_material
@@ -768,55 +766,55 @@
 !! DK DK Sept 2012 added the absorbing interface type for Stacey
     abs_surface_type(match) = abs_surface(5,num_edge)
 
-    if ((abs_surface(3,num_edge) == elmnts(ngnod*abs_surface_merge(match)+0) .and. &
-          abs_surface(4,num_edge) == elmnts(ngnod*abs_surface_merge(match)+1))) then
+    if ((abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+0) .and. &
+          abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+1))) then
        abs_surface_char(IEDGE1,match) = .true.
     endif
 
-    if ((abs_surface(4,num_edge) == elmnts(ngnod*abs_surface_merge(match)+0) .and. &
-          abs_surface(3,num_edge) == elmnts(ngnod*abs_surface_merge(match)+1))) then
+    if ((abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+0) .and. &
+          abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+1))) then
        temp = abs_surface(4,num_edge)
        abs_surface(4,num_edge) = abs_surface(3,num_edge)
        abs_surface(3,num_edge) = temp
        abs_surface_char(IEDGE1,match) = .true.
     endif
 
-    if ((abs_surface(3,num_edge) == elmnts(ngnod*abs_surface_merge(match)+0) .and. &
-          abs_surface(4,num_edge) == elmnts(ngnod*abs_surface_merge(match)+3))) then
+    if ((abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+0) .and. &
+          abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+3))) then
        abs_surface_char(IEDGE4,match) = .true.
     endif
 
-    if ((abs_surface(4,num_edge) == elmnts(ngnod*abs_surface_merge(match)+0) .and. &
-          abs_surface(3,num_edge) == elmnts(ngnod*abs_surface_merge(match)+3))) then
+    if ((abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+0) .and. &
+          abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+3))) then
        temp = abs_surface(4,num_edge)
        abs_surface(4,num_edge) = abs_surface(3,num_edge)
        abs_surface(3,num_edge) = temp
        abs_surface_char(IEDGE4,match) = .true.
     endif
 
-    if ((abs_surface(3,num_edge) == elmnts(ngnod*abs_surface_merge(match)+1) .and. &
-          abs_surface(4,num_edge) == elmnts(ngnod*abs_surface_merge(match)+2))) then
+    if ((abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+1) .and. &
+          abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+2))) then
        abs_surface_char(IEDGE2,match) = .true.
     endif
 
-    if ((abs_surface(4,num_edge) == elmnts(ngnod*abs_surface_merge(match)+1) .and. &
-          abs_surface(3,num_edge) == elmnts(ngnod*abs_surface_merge(match)+2))) then
+    if ((abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+1) .and. &
+          abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+2))) then
        temp = abs_surface(4,num_edge)
        abs_surface(4,num_edge) = abs_surface(3,num_edge)
        abs_surface(3,num_edge) = temp
        abs_surface_char(IEDGE2,match) = .true.
     endif
 
-    if ((abs_surface(3,num_edge) == elmnts(ngnod*abs_surface_merge(match)+2) .and. &
-          abs_surface(4,num_edge) == elmnts(ngnod*abs_surface_merge(match)+3))) then
+    if ((abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+2) .and. &
+          abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+3))) then
        temp = abs_surface(4,num_edge)
        abs_surface(4,num_edge) = abs_surface(3,num_edge)
        abs_surface(3,num_edge) = temp
        abs_surface_char(IEDGE3,match) = .true.
     endif
 
-    if ((abs_surface(4,num_edge) == elmnts(ngnod*abs_surface_merge(match)+2) .and. &
-          abs_surface(3,num_edge) == elmnts(ngnod*abs_surface_merge(match)+3))) then
+    if ((abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+2) .and. &
+          abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface_merge(match)+3))) then
        abs_surface_char(IEDGE3,match) = .true.
     endif
 
@@ -873,27 +871,27 @@
       do iedge = 1, nedges_coupled
         do inode1 = 0, 3
 
-          if (abs_surface(3,num_edge) == elmnts(ngnod*edges_coupled(1,iedge)+inode1)) then
+          if (abs_surface(3,num_edge) == elmnts(NGNOD*edges_coupled(1,iedge)+inode1)) then
             do inode2 = 0, 3
-              if (abs_surface(3,num_edge) == elmnts(ngnod*edges_coupled(2,iedge)+inode2)) then
+              if (abs_surface(3,num_edge) == elmnts(NGNOD*edges_coupled(2,iedge)+inode2)) then
 
-                if (abs_surface(3,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+0) .and. &
-                     abs_surface(4,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+1)) then
+                if (abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+0) .and. &
+                     abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+1)) then
                     ibegin_edge1(match) = 2
                 endif
 
-                if (abs_surface(3,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+1) .and. &
-                     abs_surface(4,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+2)) then
+                if (abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+1) .and. &
+                     abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+2)) then
                     ibegin_edge2(match) = 2
                 endif
 
-                if (abs_surface(3,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+3) .and. &
-                     abs_surface(4,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+2)) then
+                if (abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+3) .and. &
+                     abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+2)) then
                     ibegin_edge3(match) = 2
                 endif
 
-                if (abs_surface(3,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+0) .and. &
-                     abs_surface(4,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+3)) then
+                if (abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+0) .and. &
+                     abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+3)) then
                     ibegin_edge4(match) = 2
                 endif
 
@@ -902,26 +900,26 @@
 
           endif
 
-          if (abs_surface(4,num_edge) == elmnts(ngnod*edges_coupled(1,iedge)+inode1)) then
+          if (abs_surface(4,num_edge) == elmnts(NGNOD*edges_coupled(1,iedge)+inode1)) then
             do inode2 = 0, 3
-              if (abs_surface(4,num_edge) == elmnts(ngnod*edges_coupled(2,iedge)+inode2)) then
-                if (abs_surface(3,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+0) .and. &
-                     abs_surface(4,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+1)) then
+              if (abs_surface(4,num_edge) == elmnts(NGNOD*edges_coupled(2,iedge)+inode2)) then
+                if (abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+0) .and. &
+                     abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+1)) then
                     iend_edge1(match) = NGLLX - 1
                 endif
 
-                if (abs_surface(3,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+1) .and. &
-                     abs_surface(4,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+2)) then
+                if (abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+1) .and. &
+                     abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+2)) then
                     iend_edge2(match) = NGLLZ - 1
                 endif
 
-                if (abs_surface(3,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+3) .and. &
-                     abs_surface(4,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+2)) then
+                if (abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+3) .and. &
+                     abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+2)) then
                     iend_edge3(match) = NGLLX - 1
                 endif
 
-                if (abs_surface(3,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+0) .and. &
-                     abs_surface(4,num_edge) == elmnts(ngnod*abs_surface(1,num_edge)+3)) then
+                if (abs_surface(3,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+0) .and. &
+                     abs_surface(4,num_edge) == elmnts(NGNOD*abs_surface(1,num_edge)+3)) then
                     iend_edge4(match) = NGLLZ - 1
                 endif
 
@@ -936,6 +934,14 @@
     endif
 
   enddo
+
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  nedge_bound   : ',nedge_bound
+    write(IMAIN,*) '  nelemabs_merge: ',nelemabs_merge
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
 
   end subroutine merge_abs_boundaries
 
@@ -1002,7 +1008,7 @@
   ! inspired by merge_abs_boundaries upper in this file
   !--------------------------------------------------
 
-  subroutine merge_acoustic_forcing_boundaries(ngnod)
+  subroutine merge_acoustic_forcing_boundaries(NGNOD)
 
   use constants, only: IEDGE1,IEDGE2,IEDGE3,IEDGE4,NGLLX,NGLLZ
 
@@ -1014,7 +1020,7 @@
 
   implicit none
 
-  integer, intent(in) :: ngnod
+  integer, intent(in) :: NGNOD
 
   ! local parameters
   integer  :: num_edge, nedge_bound
@@ -1040,55 +1046,55 @@
     acforcing_surface_merge(match) = acforcing_surface(1,num_edge)
     acforcing_surface_type(match) = acforcing_surface(5,num_edge)
 
-    if ((acforcing_surface(3,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+0) .and. &
-          acforcing_surface(4,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+1))) then
+    if ((acforcing_surface(3,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+0) .and. &
+          acforcing_surface(4,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+1))) then
        acforcing_surface_char(IEDGE1,match) = .true.
     endif
 
-    if ((acforcing_surface(4,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+0) .and. &
-          acforcing_surface(3,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+1))) then
+    if ((acforcing_surface(4,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+0) .and. &
+          acforcing_surface(3,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+1))) then
        temp = acforcing_surface(4,num_edge)
        acforcing_surface(4,num_edge) = acforcing_surface(3,num_edge)
        acforcing_surface(3,num_edge) = temp
        acforcing_surface_char(IEDGE1,match) = .true.
     endif
 
-    if ((acforcing_surface(3,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+0) .and. &
-          acforcing_surface(4,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+3))) then
+    if ((acforcing_surface(3,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+0) .and. &
+          acforcing_surface(4,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+3))) then
        acforcing_surface_char(IEDGE4,match) = .true.
     endif
 
-    if ((acforcing_surface(4,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+0) .and. &
-          acforcing_surface(3,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+3))) then
+    if ((acforcing_surface(4,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+0) .and. &
+          acforcing_surface(3,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+3))) then
        temp = acforcing_surface(4,num_edge)
        acforcing_surface(4,num_edge) = acforcing_surface(3,num_edge)
        acforcing_surface(3,num_edge) = temp
        acforcing_surface_char(IEDGE4,match) = .true.
     endif
 
-    if ((acforcing_surface(3,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+1) .and. &
-          acforcing_surface(4,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+2))) then
+    if ((acforcing_surface(3,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+1) .and. &
+          acforcing_surface(4,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+2))) then
        acforcing_surface_char(IEDGE2,match) = .true.
     endif
 
-    if ((acforcing_surface(4,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+1) .and. &
-          acforcing_surface(3,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+2))) then
+    if ((acforcing_surface(4,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+1) .and. &
+          acforcing_surface(3,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+2))) then
        temp = acforcing_surface(4,num_edge)
        acforcing_surface(4,num_edge) = acforcing_surface(3,num_edge)
        acforcing_surface(3,num_edge) = temp
        acforcing_surface_char(IEDGE2,match) = .true.
     endif
 
-    if ((acforcing_surface(3,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+2) .and. &
-          acforcing_surface(4,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+3))) then
+    if ((acforcing_surface(3,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+2) .and. &
+          acforcing_surface(4,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+3))) then
        temp = acforcing_surface(4,num_edge)
        acforcing_surface(4,num_edge) = acforcing_surface(3,num_edge)
        acforcing_surface(3,num_edge) = temp
        acforcing_surface_char(IEDGE3,match) = .true.
     endif
 
-    if ((acforcing_surface(4,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+2) .and. &
-          acforcing_surface(3,num_edge) == elmnts(ngnod*acforcing_surface_merge(match)+3))) then
+    if ((acforcing_surface(4,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+2) .and. &
+          acforcing_surface(3,num_edge) == elmnts(NGNOD*acforcing_surface_merge(match)+3))) then
        acforcing_surface_char(IEDGE3,match) = .true.
     endif
 

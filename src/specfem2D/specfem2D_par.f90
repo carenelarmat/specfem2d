@@ -35,56 +35,79 @@ module specfem_par
 
 ! main parameter module for specfem simulations
 
-  use constants, only: CUSTOM_REAL,MAX_STRING_LEN,MAX_LENGTH_NETWORK_NAME,MAX_LENGTH_STATION_NAME, &
-    NEDGES,NGLLX,NGLLZ,NGLJ,NDIM
+  use constants, only: &
+    CUSTOM_REAL,NGLLX,NGLLZ, &
+    MAX_STRING_LEN,MAX_LENGTH_NETWORK_NAME,MAX_LENGTH_STATION_NAME, &
+    NEDGES,NGLJ,NDIM, &
+    myrank
 
   use shared_parameters
+
+  use source_file_par, only: source_type,time_function_type,name_of_source_file,burst_band_width, &
+    x_source,z_source,vx_source,vz_source,Mxx,Mzz,Mxz,f0_source,tshift_src,factor,anglesource, &
+    SOURCE_IS_MOVING
 
   implicit none
   !=====================================================================
   ! input for simulation (its beginning)
   !=====================================================================
+
   !---------------------------------------------------------------------
   ! for material information
   !---------------------------------------------------------------------
   integer :: numat
-  logical :: assign_external_model
 
+  ! default model
   ! poroelastic and elastic coefficients
   double precision, dimension(:,:,:), allocatable :: poroelastcoef
-  logical, dimension(:), allocatable :: already_shifted_velocity
-  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: vpext,vsext,rhoext
-  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: QKappa_attenuationext,Qmu_attenuationext
-
-  ! anisotropy parameters
-  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: c11ext,c13ext,c15ext,c33ext,c35ext,c55ext,c12ext,c23ext,c25ext,c22ext
-  real(kind=CUSTOM_REAL), dimension(:), allocatable :: c11_k, c13_k, c15_k,c33_k, c35_k, c55_k
-  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: c11_kl, c13_kl, c15_kl,c33_kl, c35_kl, c55_kl
-
-  logical :: all_anisotropic
-  logical, dimension(:), allocatable :: ispec_is_anisotropic
-
-  double precision, dimension(:,:), allocatable :: anisotropy
-
+  ! aniso material properties
+  double precision, dimension(:,:), allocatable :: anisotropycoef
   ! for attenuation
-  double precision, dimension(:), allocatable  :: QKappa_attenuation
-  double precision, dimension(:), allocatable  :: Qmu_attenuation
+  double precision, dimension(:), allocatable  :: QKappa_attenuationcoef
+  double precision, dimension(:), allocatable  :: Qmu_attenuationcoef
+
+  ! external models
+  logical :: assign_external_model
 
   integer :: nspec_ATT_el,nspec_ATT_ac,nglob_att
   real(kind=CUSTOM_REAL), dimension(:,:,:,:), allocatable :: inv_tau_sigma_nu1,phi_nu1,inv_tau_sigma_nu2,phi_nu2
   real(kind=CUSTOM_REAL), dimension(:,:,:) , allocatable :: Mu_nu1,Mu_nu2
 
-  ! material
+  ! material store arrays
+  !
+  ! note: we will be unifying the default & external model arrays **coef and **ext to have a single **store repository
+  !       of model material properties (similar to 3D versions).
+  !
+  !       material properties in a spectral-element method are stored on a local level in general.
+  !       thus, the default model coefficients **ceof will be mapped to these local ones **store. this will increase the
+  !       memory burden of the code, which is hopefully still fine for 2D setups.
+  !       for external models, they are already defined at local **ext arrays which will then only be copied.
+  !       to avoid duplication and free memory, the **ext arrays will only be needed for reading in models.
+  !       once material properties are read in, they will be stored for the solver in the **store arrays
+  !       and all **ext arrays freed afterwards.
+  !
+  ! unified material properties
   ! density
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: rhostore
   ! isotropic moduli
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: kappastore,mustore
   ! anisotropic
-  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: &
-    c11store,c12store,c13store,c15store,c23store,c25store,c33store,c35store,c55store
+  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: c11store,c12store,c13store,c15store,c22store,c23store,c25store, &
+                                                           c33store,c35store,c55store
 
-  ! for absorbing boundaries
-  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: rho_vp,rho_vs
+  ! useful additional rho*vp and rho*vs arrays for getting vp,vs and absorbing boundary terms
+  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: rho_vpstore,rho_vsstore
+
+  ! attenuation
+  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: qkappa_attenuation_store,qmu_attenuation_store
+
+  ! poroelasticity
+  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: phistore,tortstore,etastore,mufr_store
+  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: vpIIstore
+  real(kind=CUSTOM_REAL), dimension(:,:,:,:), allocatable :: rhoarraystore,kappaarraystore,permstore
+
+  ! resolution
+  double precision :: mesh_T_min
 
   !---------------------------------------------------------------------
   ! for boundary condition (physical BC or artificial BC)
@@ -93,10 +116,14 @@ module specfem_par
 
   ! PML
   logical, dimension(:), allocatable :: ispec_is_PML
-  integer :: nspec_PML
+  integer :: nspec_PML,nspec_PML_X,nspec_PML_Z,nspec_PML_XZ
 
   integer, dimension(:), allocatable :: region_CPML
-  integer, dimension(:), allocatable :: spec_to_PML
+  integer, dimension(:), allocatable :: spec_to_PML,spec_to_PML_GPU
+  double precision :: ALPHA_MAX_PML
+  real(kind=CUSTOM_REAL) :: d0_max
+
+  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: abs_normalized
 
   logical, dimension(:,:), allocatable :: which_PML_elem
   logical, dimension(:), allocatable  :: mask_ibool_PML
@@ -107,9 +134,18 @@ module specfem_par
 
   ! Stacey BC
   logical, dimension(:,:), allocatable  :: codeabs
-  integer, dimension(:), allocatable  :: typeabs
   ! for detection of corner element on absorbing boundary
   logical, dimension(:,:), allocatable  :: codeabs_corner
+
+  ! absorbing boundary
+  integer :: num_abs_boundary_faces
+  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: abs_boundary_normal
+  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: abs_boundary_jacobian1Dw
+  integer, dimension(:,:,:), allocatable :: abs_boundary_ij
+  integer, dimension(:), allocatable :: abs_boundary_ispec
+  integer, dimension(:), allocatable :: edge_abs
+  ! boundary type (bottom/right/top/left)
+  integer, dimension(:), allocatable  :: abs_boundary_type ! used for plotting postscript images
 
   ! horizontal periodicity distance for periodic conditions
   logical, dimension(:), allocatable :: this_ibool_is_a_periodic_edge
@@ -143,18 +179,8 @@ module specfem_par
   !---------------------------------------------------------------------
   ! for source-receiver information
   !---------------------------------------------------------------------
-  ! source description
-  integer, dimension(:), allocatable :: source_type,time_function_type
-  character(len=MAX_STRING_LEN), dimension(:), allocatable :: name_of_source_file
-  double precision, dimension(:), allocatable :: burst_band_width
-
   ! source locations
-  double precision, dimension(:), allocatable :: x_source,z_source
   double precision, dimension(:), allocatable :: xi_source,gamma_source
-
-  double precision, dimension(:), allocatable :: Mxx,Mzz,Mxz
-  double precision, dimension(:), allocatable :: f0_source,tshift_src,factor,anglesource
-
   real(kind=CUSTOM_REAL), dimension(:,:,:,:),allocatable :: sourcearrays
   double precision :: t0
 
@@ -218,17 +244,8 @@ module specfem_par
   double precision, dimension(:), allocatable :: cosrot_irec, sinrot_irec
   double precision, dimension(:), allocatable :: x_final_receiver, z_final_receiver
 
-  integer, dimension(:), allocatable :: source_courbe_eros
-
   integer  :: nnodes_tangential_curve
   double precision, dimension(:,:), allocatable  :: nodes_tangential_curve
-  logical  :: any_tangential_curve
-
-  integer  :: n1_tangential_detection_curve
-  integer, dimension(4)  :: n_tangential_detection_curve
-  integer, dimension(:), allocatable  :: rec_tangential_detection_curve
-  double precision :: distmin, dist_current, anglesource_recv
-  double precision, dimension(:), allocatable :: dist_tangential_detection_curve
 
   !---------------------------------------------------------------------
   ! for SEM discretization of the model
@@ -254,8 +271,8 @@ module specfem_par
   integer, dimension(:,:), allocatable  :: knods
   integer, dimension(:), allocatable :: kmato
 
-  integer, dimension(:), allocatable :: numabs, &
-     ibegin_edge1,iend_edge1,ibegin_edge3,iend_edge3,ibegin_edge4,iend_edge4,ibegin_edge2,iend_edge2
+  integer, dimension(:), allocatable :: ibegin_edge1,iend_edge1,ibegin_edge3,iend_edge3, &
+                                        ibegin_edge4,iend_edge4,ibegin_edge2,iend_edge2
 
   ! Lagrange interpolators at receivers
   double precision, dimension(:), allocatable :: hxir,hgammar,hpxir,hpgammar
@@ -288,16 +305,16 @@ module specfem_par
   ! for time discretization
   !---------------------------------------------------------------------
   ! for LDDRK46
-  integer :: i_stage,stage_time_scheme
+  integer :: i_stage,NSTAGE_TIME_SCHEME
 
   ! coefficients of the explicit Newmark time scheme
-  double precision :: deltat,deltatover2,deltatsquareover2
+  real(kind=CUSTOM_REAL) :: deltat,deltatover2,deltatsquareover2
 
   ! for backward simulation in adjoint inversion
-  double precision :: b_deltatover2,b_deltatsquareover2,b_deltat ! coefficients of the explicit Newmark time scheme
+  real(kind=CUSTOM_REAL) :: b_deltatover2,b_deltatsquareover2,b_deltat ! coefficients of the explicit Newmark time scheme
 
   ! current time
-  double precision :: timeval
+  double precision :: current_timeval
 
   ! UNDO_ATTENUATION_AND_OR_PML
   integer :: NSUBSET_ITERATIONS
@@ -329,14 +346,14 @@ module specfem_par
   real(kind=CUSTOM_REAL), dimension(:), allocatable :: potential_acoustic_init_rk, potential_dot_acoustic_init_rk
   real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: potential_dot_dot_acoustic_rk, potential_dot_acoustic_rk
 
-  real(kind=CUSTOM_REAL), dimension(:), allocatable :: potential_acoustic_adj_coupling
+  ! not needed anymore, taking care of by re-ordering domain updates
+  !real(kind=CUSTOM_REAL), dimension(:), allocatable :: potential_acoustic_adj_coupling
 
   ! for acoustic detection
   integer :: nglob_acoustic
 
   ! number of purely acoustic elements in this slice
   integer :: nspec_acoustic
-  integer :: nspec_acoustic_b
 
   ! local flag to determine if any acoustic elements in this slice
   logical :: any_acoustic
@@ -378,6 +395,12 @@ module specfem_par
   real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: pml_interface_history_potential_dot
   real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: pml_interface_history_potential_dot_dot
 
+  ! PML points on absorbing boundary in acoustic domains (for Dirichlet condition)
+  integer :: PML_nglob_abs_acoustic
+  integer, dimension(:),allocatable :: PML_abs_points_acoustic
+  integer :: PML_nglob_abs_elastic
+  integer, dimension(:),allocatable :: PML_abs_points_elastic
+
   ! buffer for I/O
   real(kind=CUSTOM_REAL), dimension(:), allocatable :: no_backward_acoustic_buffer
 
@@ -390,7 +413,6 @@ module specfem_par
 
   ! number of purely elastic elements in this slice
   integer :: nspec_elastic
-  integer :: nspec_elastic_b
 
   ! local flag if any elastic element is in this slice
   logical :: any_elastic
@@ -399,6 +421,13 @@ module specfem_par
   logical :: ELASTIC_SIMULATION
 
   logical, dimension(:), allocatable :: ispec_is_elastic
+
+  ! anisotropy
+  integer :: nspec_aniso
+
+  logical :: any_anisotropy
+  logical :: all_anisotropic
+  logical, dimension(:), allocatable :: ispec_is_anisotropic
 
   ! inverse mass matrices
   real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: rmass_inverse_elastic
@@ -436,7 +465,8 @@ module specfem_par
   real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: e1_initial_rk_acous
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: e1_force_rk_acous,sum_forces_old,b_sum_forces_old
 
-  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: accel_elastic_adj_coupling
+  ! not needed anymore, taking care of by re-ordering domain updates
+  !real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: accel_elastic_adj_coupling
 
   ! the variable for CPML in elastic simulation
   real(kind=CUSTOM_REAL), dimension(:,:,:,:), allocatable :: &
@@ -454,9 +484,11 @@ module specfem_par
                                                              muPML_rmemory_dux_dxl,muPML_rmemory_duz_dzl, &
                                                              muPML_rmemory_dux_dzl,muPML_rmemory_duz_dxl
 
-  !for backward simulation in adjoint inversion
-  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: &
-    b_accel_elastic,b_veloc_elastic,b_displ_elastic,b_displ_elastic_old
+  ! for backward simulation in adjoint inversion
+  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: b_accel_elastic,b_veloc_elastic,b_displ_elastic
+
+  ! PML
+  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: b_displ_elastic_old
 
   ! store potential, potential_dot, potential_dot_dot along interior interface of PML, shared by interior compuational domain
   ! for backward simulation in adjoint inversion
@@ -483,7 +515,7 @@ module specfem_par
 
   ! number of purely poroelastic elements in this slice
   integer :: nspec_poroelastic
-  integer :: nspec_poroelastic_b
+  integer :: b_nspec_poroelastic
 
   ! local flag to determine if this slice has poroelastic elements
   logical :: any_poroelastic
@@ -524,8 +556,9 @@ module specfem_par
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: &
     accelw_poroelastic_rk,velocw_poroelastic_rk
 
-  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: &
-    accels_poroelastic_adj_coupling, accelw_poroelastic_adj_coupling
+  ! not needed anymore, taking care of by re-ordering domain updates
+  !real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: &
+  !  accels_poroelastic_adj_coupling, accelw_poroelastic_adj_coupling
 
   double precision, dimension(:), allocatable :: porosity,tortuosity
   double precision, dimension(:,:), allocatable :: density,permeability
@@ -568,17 +601,16 @@ module specfem_par
   ! for kernel computation
   integer :: tomo_material
 
-  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: accel_ac,b_displ_ac,b_accel_ac
-
   ! elastic domain kernels
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: rho_kl, mu_kl, kappa_kl
-  real(kind=CUSTOM_REAL), dimension(:), allocatable :: mu_k, kappa_k,rho_k
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: rhop_kl, beta_kl, alpha_kl
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: bulk_c_kl, bulk_beta_kl
 
+  ! aniso kernels
+  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: c11_kl, c13_kl, c15_kl,c33_kl, c35_kl, c55_kl
+
   ! acoustic domain kernels
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: rho_ac_kl, kappa_ac_kl
-  real(kind=CUSTOM_REAL), dimension(:), allocatable :: rhol_ac_global, kappal_ac_global
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: rhop_ac_kl, alpha_ac_kl
 
   double precision, dimension(:,:,:),allocatable:: rho_local,vp_local,vs_local
@@ -591,9 +623,6 @@ module specfem_par
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: rhot_kl, rhof_kl, sm_kl, eta_kl, mufr_kl, B_kl, &
     C_kl, M_kl, rhob_kl, rhofb_kl, phi_kl, mufrb_kl, rhobb_kl, rhofbb_kl, phib_kl, ratio_kl
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: cpI_kl, cpII_kl, cs_kl
-  ! on global nodes
-  real(kind=CUSTOM_REAL), dimension(:), allocatable :: rhot_k, rhof_k, sm_k, eta_k, mufr_k, B_k, &
-    C_k, M_k
 
   ! adjoint sources
   integer :: nadj_rec_local
@@ -623,6 +652,7 @@ module specfem_par
 
   ! current time step
   integer :: it
+  integer :: it_begin,it_end
 
   ! global points
   integer :: nglob,npgeo
@@ -688,10 +718,12 @@ module specfem_par
   !---------------------------------------------------------------------
   ! for seismograms
   !---------------------------------------------------------------------
-  integer :: seismo_offset, seismo_current
+  integer, dimension(:), allocatable :: seismotypeVec
+  integer :: seismo_current,seismo_offset
 
   ! for seismograms
-  double precision, dimension(:,:), allocatable :: sisux,sisuz,siscurl
+  double precision, dimension(:,:,:), allocatable :: sisux,sisuz,siscurl
+  integer :: nlength_seismogram
 
 end module specfem_par
 
@@ -703,20 +735,19 @@ module specfem_par_noise
 
   use constants, only: CUSTOM_REAL
 
-  use shared_parameters
+!  use shared_parameters
 
   implicit none
 
   ! noise simulations:
-  ! master station
+  ! main station
   integer :: ispec_noise
   double precision :: xi_noise, gamma_noise
 
   ! for P_SV case, 0 for vertical along z-direction
   real(kind=CUSTOM_REAL) :: angle_noise
 
-  real(kind=CUSTOM_REAL), dimension(:), allocatable :: time_function_noise
-  real(kind=CUSTOM_REAL), dimension(:,:,:,:), allocatable :: source_array_noise
+  real(kind=CUSTOM_REAL), dimension(:,:,:,:), allocatable :: noise_sourcearray
   real(kind=CUSTOM_REAL), dimension(:), allocatable :: mask_noise
 
   ! The following array is used to hold snapshots of the generating
@@ -724,7 +755,7 @@ module specfem_par_noise
   ! noise simulation specified. In some cases, the entire generating wavefield
   ! or ensemble forward wavefield needs to be saved for all times steps. Since
   ! the disk space required to do this is usually quite large
-  real(kind=CUSTOM_REAL), dimension(:), allocatable :: surface_movie_y_or_z_noise
+  real(kind=CUSTOM_REAL), dimension(:), allocatable :: noise_surface_movie_y_or_z
 
   ! For writing noise wavefields
   integer :: noise_output_ncol
@@ -741,29 +772,15 @@ module specfem_par_gpu
 
   use constants, only: CUSTOM_REAL
 
-  use shared_parameters
+!  use shared_parameters
 
   implicit none
 
   ! CUDA mesh pointer to integer wrapper
   integer(kind=8) :: Mesh_pointer
 
-  ! wavefield transfers
-  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: tmp_displ_2D,tmp_veloc_2D,tmp_accel_2D
-
-  ! time steps
-  real(kind=CUSTOM_REAL) :: deltatf,deltatover2f,deltatsquareover2f
-  real(kind=CUSTOM_REAL) :: b_deltatf,b_deltatover2f,b_deltatsquareover2f
-
   ! mesh dimension
   integer :: NGLOB_AB, NSPEC_AB
-
-  logical :: ANY_ANISOTROPY
-
-  ! absorbing boundary
-  real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: abs_boundary_normal
-  real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: abs_boundary_jacobian1Dw
-  integer, dimension(:,:,:), allocatable :: abs_boundary_ij
 
   ! free surface
   real(kind=CUSTOM_REAL), dimension(:,:,:), allocatable :: free_surface_normal
@@ -771,8 +788,6 @@ module specfem_par_gpu
   integer, dimension(:,:,:), allocatable :: free_surface_ij
   integer, dimension(:), allocatable :: free_ac_ispec
   integer :: num_free_surface_faces
-
-  integer, dimension(:), allocatable :: cote_abs
 
   ! sources
   integer :: nsources_local
@@ -809,13 +824,17 @@ module specfem_par_movie
 
 ! parameter module for noise simulations
 
-  use constants, only: CUSTOM_REAL,MAX_STRING_LEN
+  use constants, only: MAX_STRING_LEN,CUSTOM_REAL
 
-  use shared_parameters
+!  use shared_parameters
 
   implicit none
 
-  double precision, dimension(:,:), allocatable :: flagrange,xinterp,zinterp,Uxinterp,Uzinterp
+  ! movies flags
+  logical :: MOVIE_SIMULATION
+
+  double precision, dimension(:,:), allocatable :: flagrange
+  double precision, dimension(:,:), allocatable :: xinterp,zinterp,Uxinterp,Uzinterp
   double precision, dimension(:,:), allocatable :: vector_field_display
 
   double precision, dimension(:,:,:), allocatable :: shape2D_display
@@ -873,12 +892,18 @@ module specfem_par_movie
   ! for wavefield dump
   !---------------------------------------------------------------------
   logical :: this_is_the_first_time_we_dump
-  logical, dimension(:), allocatable  :: mask_ibool
-  logical, dimension(:), allocatable  :: mask_duplicate ! mask array for identifying duplicates between partitions
+  logical, dimension(:), allocatable :: mask_ibool
+
   integer, dimension(:), allocatable :: dump_recv_counts
-  double precision, dimension(:,:), allocatable :: dump_recv, dump_send, dump_write, dump_gather
-  logical, dimension(:), allocatable :: dump_duplicate_send, dump_duplicate_recv, dump_duplicate_gather
+  double precision, dimension(:,:), allocatable :: dump_recv, dump_send, dump_write
+  double precision, dimension(:,:), allocatable :: dump_gather
+
+  logical, dimension(:), allocatable :: dump_duplicate_send, dump_duplicate_recv
+  logical, dimension(:), allocatable  :: mask_duplicate ! mask array for identifying duplicates between partitions
+
+  ! helper arrays to integrate adjoint potential
+  real(kind=CUSTOM_REAL), dimension(:), allocatable :: potential_adj_acoustic, &
+    potential_adj_int_acoustic,potential_adj_int_int_acoustic
 
 end module specfem_par_movie
-
 

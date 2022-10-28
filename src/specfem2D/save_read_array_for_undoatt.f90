@@ -40,7 +40,7 @@
     potential_acoustic,potential_dot_acoustic,potential_dot_dot_acoustic, &
     displ_elastic,veloc_elastic,accel_elastic, &
     e1,e11,e13,dux_dxl_old,duz_dzl_old,dux_dzl_plus_duz_dxl_old, &
-    e1_acous_sf,sum_forces_old,GPU_MODE,nspec_ATT_ac,nglob
+    e1_acous_sf,sum_forces_old,GPU_MODE,nspec_ATT_ac,nspec_ATT_el,nglob
 
   use specfem_par_gpu, only: Mesh_pointer
 
@@ -57,8 +57,9 @@
   ! saves frame of the forward simulation
 
   write(outputname,'(a,i6.6,a,i6.6,a)') 'proc',myrank,'_save_frame_at',iteration_on_subset_tmp,'.bin'
-  open(unit=IOUT_UNDO_ATT  ,file=trim(OUTPUT_FILES)//outputname, &
-       status='unknown',form='unformatted',action='write',iostat=ier)
+
+  ! note: adding access='stream' would further decrease file size
+  open(unit=IOUT_UNDO_ATT,file=trim(OUTPUT_FILES)//outputname,status='unknown',form='unformatted',action='write',iostat=ier)
   if (ier /= 0 ) call exit_MPI(myrank,'Error opening file proc***_save_frame_at** for writing')
 
   if (any_acoustic) then
@@ -84,6 +85,9 @@
     write(IOUT_UNDO_ATT) displ_elastic
 
     if (ATTENUATION_VISCOELASTIC) then
+      if (GPU_MODE) call transfer_viscoelastic_var_from_device(NGLLX*NGLLZ*nspec_ATT_el, &
+                                                               e1,e11,e13,dux_dxl_old,duz_dzl_old,dux_dzl_plus_duz_dxl_old, &
+                                                               Mesh_pointer)
       write(IOUT_UNDO_ATT) e1
       write(IOUT_UNDO_ATT) e11
       write(IOUT_UNDO_ATT) e13
@@ -97,16 +101,19 @@
 
   end subroutine save_forward_arrays_undoatt
 
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+!----------------------------------------------------------------------------------------
+!
 
   subroutine save_forward_arrays_no_backward()
 
-  use constants, only: IOUT_UNDO_ATT,MAX_STRING_LEN,OUTPUT_FILES,APPROXIMATE_HESS_KL,NDIM
+  use constants, only: IOUT_UNDO_ATT,MAX_STRING_LEN,OUTPUT_FILES,NDIM,CUSTOM_REAL
 
   use specfem_par, only: myrank,it,NSTEP, &
     any_acoustic,any_elastic,potential_acoustic,displ_elastic,accel_elastic,GPU_MODE, &
     no_backward_acoustic_buffer,no_backward_displ_buffer,no_backward_accel_buffer, &
-    no_backward_iframe,no_backward_Nframes,nglob
+    no_backward_iframe,no_backward_Nframes,nglob, &
+    APPROXIMATE_HESS_KL
 
   use specfem_par_gpu, only: Mesh_pointer
 
@@ -116,7 +123,7 @@
   ! a wavefield in two iterations.
   ! At the first iteration, we transfer the wavefield from the GPU to the disk.
   ! At the second iteration, we write this wavefield on the disk from the RAM.
-  ! In the text above, an iteration means NSTEP_BETWEEN_COMPUTE_KERNELS iterations of the timeloop.
+  ! In the text above, an iteration means NTSTEP_BETWEEN_COMPUTE_KERNELS iterations of the timeloop.
   ! The buffer no_backward_acoustic_buffer is declared in only one dimension in
   ! order to allow the CUDA API to set it in pinned memory (HostRegister).
   ! To perform the async I/O, stream accesses are used for files, numerical
@@ -149,20 +156,34 @@
 
   ! for the two first times, we only launch GPU = => RAM transfers
   if (no_backward_iframe < 3) then
+    if (any_acoustic) then
+      if (GPU_MODE) then
+        call transfer_async_pot_ac_from_device(no_backward_acoustic_buffer(nglob*buffer_num_GPU_transfer+1),Mesh_pointer)
+      else
+        no_backward_acoustic_buffer(nglob*buffer_num_GPU_transfer+1:nglob*(buffer_num_GPU_transfer+1)) = potential_acoustic
+      endif
+    endif
 
-    if (GPU_MODE) then
-      call transfer_async_pot_ac_from_device(no_backward_acoustic_buffer(nglob*buffer_num_GPU_transfer+1),Mesh_pointer)
-    else
-      no_backward_acoustic_buffer(nglob*buffer_num_GPU_transfer+1:nglob*(buffer_num_GPU_transfer+1)) = potential_acoustic
+    if (any_elastic) then
+      if (APPROXIMATE_HESS_KL) then
+        offset = 2 * CUSTOM_REAL * (NDIM*nglob) * (no_backward_iframe-1) + 1
+      else
+        offset = CUSTOM_REAL * (NDIM*nglob) * (no_backward_iframe-1) + 1
+      endif
+      no_backward_displ_buffer(:,:) = displ_elastic(:,:)
+      write(IOUT_UNDO_ATT,asynchronous='yes',pos=offset) no_backward_displ_buffer
+      if (APPROXIMATE_HESS_KL) then
+        no_backward_accel_buffer(:,:) = accel_elastic(:,:)
+        write(IOUT_UNDO_ATT,asynchronous='yes',pos=offset+CUSTOM_REAL*(NDIM*nglob)) no_backward_accel_buffer
+      endif
     endif
 
   else if (no_backward_iframe <= no_backward_Nframes) then
 
     if (any_acoustic) then
-
       ! the offset is calculated in two steps in order to avoid integer overflow
       offset = no_backward_iframe - 3
-      offset = offset * nglob * 4 + 1
+      offset = offset * nglob * CUSTOM_REAL + 1
       write(IOUT_UNDO_ATT,asynchronous='yes',pos=offset) &
                           no_backward_acoustic_buffer(nglob*buffer_num_async_IO+1:nglob*(buffer_num_async_IO+1))
 
@@ -181,29 +202,25 @@
         if (GPU_MODE) &
           call transfer_async_pot_ac_from_device(no_backward_acoustic_buffer(nglob*buffer_num_async_IO+1),Mesh_pointer)
 
-        write(IOUT_UNDO_ATT,pos=offset+4*nglob) &
+        write(IOUT_UNDO_ATT,pos=offset+CUSTOM_REAL*nglob) &
                             no_backward_acoustic_buffer(nglob*buffer_num_GPU_transfer+1:nglob*(buffer_num_GPU_transfer+1))
         write(IOUT_UNDO_ATT,asynchronous='yes',pos=offset+8*nglob) &
                             no_backward_acoustic_buffer(nglob*mod(no_backward_iframe+1,3)+1:nglob*(mod(no_backward_iframe+1,3)+1))
-
       endif
     endif
 
     if (any_elastic) then
-
       if (APPROXIMATE_HESS_KL) then
-        offset = 4*2*(NDIM*nglob)*(no_backward_Nframes - no_backward_iframe) + 1
+        offset = 2 * CUSTOM_REAL * (NDIM*nglob) * (no_backward_iframe-1) + 1
       else
-        offset = 4*(NDIM*nglob)*(no_backward_Nframes - no_backward_iframe) + 1
+        offset = CUSTOM_REAL * (NDIM*nglob) * (no_backward_iframe-1) + 1
       endif
-
       no_backward_displ_buffer(:,:) = displ_elastic(:,:)
       write(IOUT_UNDO_ATT,asynchronous='yes',pos=offset) no_backward_displ_buffer
       if (APPROXIMATE_HESS_KL) then
         no_backward_accel_buffer(:,:) = accel_elastic(:,:)
-        write(IOUT_UNDO_ATT,asynchronous='yes',pos=offset) no_backward_accel_buffer
+        write(IOUT_UNDO_ATT,asynchronous='yes',pos=offset+CUSTOM_REAL*(NDIM*nglob)) no_backward_accel_buffer
       endif
-
     endif
 
   endif

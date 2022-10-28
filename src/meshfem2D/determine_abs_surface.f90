@@ -36,17 +36,23 @@
 
 ! determines absorbing boundary elements
 
-  use constants, only: IBOTTOM,IRIGHT,ITOP,ILEFT
+  use constants, only: IBOTTOM,IRIGHT,ITOP,ILEFT,IMAIN,myrank
 
   use part_unstruct_par, only: nelemabs,abs_surface,elmnts,nxread,nzread
 
-  use shared_parameters, only: ngnod,absorbbottom,absorbleft,absorbright,absorbtop
+  use shared_parameters, only: NGNOD,absorbbottom,absorbleft,absorbright,absorbtop
 
   implicit none
 
   ! local parameters
   integer :: ix,iz
   integer :: inumelem
+
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  determining absorbing boundary surfaces...'
+    call flush_IMAIN()
+  endif
 
   !
   !--- definition of absorbing boundaries
@@ -58,6 +64,7 @@
   if (absorbright) nelemabs = nelemabs + nzread
 
   allocate(abs_surface(5,nelemabs))
+  abs_surface(:,:) = 0
 
   ! generate the list of absorbing elements
   if (nelemabs > 0) then
@@ -69,8 +76,8 @@
              nelemabs = nelemabs + 1
              abs_surface(1,nelemabs) = inumelem-1
              abs_surface(2,nelemabs) = 2
-             abs_surface(3,nelemabs) = elmnts(0+ngnod*(inumelem-1))
-             abs_surface(4,nelemabs) = elmnts(1+ngnod*(inumelem-1))
+             abs_surface(3,nelemabs) = elmnts(0+NGNOD*(inumelem-1))
+             abs_surface(4,nelemabs) = elmnts(1+NGNOD*(inumelem-1))
              abs_surface(5,nelemabs) = IBOTTOM
              !is_abs_surf(inumelem) = .true.
           endif
@@ -78,8 +85,8 @@
              nelemabs = nelemabs + 1
              abs_surface(1,nelemabs) = inumelem-1
              abs_surface(2,nelemabs) = 2
-             abs_surface(3,nelemabs) = elmnts(1+ngnod*(inumelem-1))
-             abs_surface(4,nelemabs) = elmnts(2+ngnod*(inumelem-1))
+             abs_surface(3,nelemabs) = elmnts(1+NGNOD*(inumelem-1))
+             abs_surface(4,nelemabs) = elmnts(2+NGNOD*(inumelem-1))
              abs_surface(5,nelemabs) = IRIGHT
              !is_abs_surf(inumelem) = .true.
           endif
@@ -87,8 +94,8 @@
              nelemabs = nelemabs + 1
              abs_surface(1,nelemabs) = inumelem-1
              abs_surface(2,nelemabs) = 2
-             abs_surface(3,nelemabs) = elmnts(3+ngnod*(inumelem-1))
-             abs_surface(4,nelemabs) = elmnts(2+ngnod*(inumelem-1))
+             abs_surface(3,nelemabs) = elmnts(3+NGNOD*(inumelem-1))
+             abs_surface(4,nelemabs) = elmnts(2+NGNOD*(inumelem-1))
              abs_surface(5,nelemabs) = ITOP
              !is_abs_surf(inumelem) = .true.
           endif
@@ -96,13 +103,20 @@
              nelemabs = nelemabs + 1
              abs_surface(1,nelemabs) = inumelem-1
              abs_surface(2,nelemabs) = 2
-             abs_surface(3,nelemabs) = elmnts(0+ngnod*(inumelem-1))
-             abs_surface(4,nelemabs) = elmnts(3+ngnod*(inumelem-1))
+             abs_surface(3,nelemabs) = elmnts(0+NGNOD*(inumelem-1))
+             abs_surface(4,nelemabs) = elmnts(3+NGNOD*(inumelem-1))
              abs_surface(5,nelemabs) = ILEFT
              !is_abs_surf(inumelem) = .true.
           endif
        enddo
     enddo
+  endif
+
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  number of elements with absorbing boundaries = ',nelemabs
+    write(IMAIN,*)
+    call flush_IMAIN()
   endif
 
   end subroutine determine_abs_surface

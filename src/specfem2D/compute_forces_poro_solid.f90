@@ -38,9 +38,10 @@
   use constants, only: CUSTOM_REAL,NDIM,NGLLX,NGLLZ,NGLJ, &
     CPML_X_ONLY,CPML_Z_ONLY,IRIGHT,ILEFT,IBOTTOM,ITOP, &
     TWO,ONE,HALF,ZERO,FOUR_THIRDS, &
-    ALPHA_LDDRK,BETA_LDDRK
+    ALPHA_LDDRK,BETA_LDDRK,ALPHA_RK4,BETA_RK4
 
-  use specfem_par, only: nglob,nspec,nglob_poroelastic,nspec_poroelastic_b, &
+  use specfem_par, only: nglob,nspec,nglob_poroelastic,b_nspec_poroelastic, &
+                         phistore,tortstore,kappaarraystore,mufr_store, &
                          ATTENUATION_VISCOELASTIC,deltat, &
                          ibool,ispec_is_poroelastic, &
                          xix,xiz,gammax,gammaz,jacobian, &
@@ -61,7 +62,7 @@
   real(kind=CUSTOM_REAL), dimension(NDIM,nglob_poroelastic), intent(in) :: displs_poroelastic,displw_poroelastic
   real(kind=CUSTOM_REAL), dimension(NDIM,nglob_poroelastic), intent(inout) :: accels_poroelastic
 
-  real(kind=CUSTOM_REAL), dimension(4,NGLLX,NGLLZ,nspec_poroelastic_b),intent(out) :: epsilondev_s
+  real(kind=CUSTOM_REAL), dimension(4,NGLLX,NGLLZ,b_nspec_poroelastic),intent(out) :: epsilondev_s
 
   integer,intent(in) :: iphase
 
@@ -89,7 +90,7 @@
   real(kind=CUSTOM_REAL) :: mu_relaxed_viscoelastic,lambda_relaxed_viscoelastic,lambdalplus2mu_relaxed_viscoel
   real(kind=CUSTOM_REAL) :: mu_G,lambdal_G,lambdalplus2mul_G
 
-  double precision :: phi,tort,mu_s,kappa_s,rho_s,kappa_f,rho_f,eta_f,mu_fr,kappa_fr,rho_bar
+  double precision :: phi,tort,kappa_s,kappa_f,kappa_fr,mu_fr
   double precision :: D_biot,H_biot,C_biot,M_biot
 
 ! for attenuation
@@ -141,15 +142,16 @@
             ! Anisotropic-medium PML for vector FETD with modified basis functions,
             ! IEEE Transactions on Antennas and Propagation, vol. 54, no. 1, (2006)
             ! evolution e1 ! no need since we are just considering shear attenuation
-            if (time_stepping_scheme == 1) then
+            select case(time_stepping_scheme)
+            case (1)
               ! Newmark
               bb = tauinvnu2; coef0 = exp(-bb * deltat)
               if (abs(bb) > 1e-5_CUSTOM_REAL) then
-                 coef1 = (1._CUSTOM_REAL - exp(-bb * deltat / 2._CUSTOM_REAL)) / bb
-                 coef2 = (1._CUSTOM_REAL - exp(-bb* deltat / 2._CUSTOM_REAL)) * exp(-bb * deltat / 2._CUSTOM_REAL)/ bb
+                 coef1 = (1._CUSTOM_REAL - exp(-bb * deltat * 0.5_CUSTOM_REAL)) / bb
+                 coef2 = (1._CUSTOM_REAL - exp(-bb * deltat * 0.5_CUSTOM_REAL)) * exp(-bb * deltat * 0.5_CUSTOM_REAL)/ bb
               else
-                 coef1 = deltat / 2._CUSTOM_REAL
-                 coef2 = deltat / 2._CUSTOM_REAL
+                 coef1 = deltat * 0.5_CUSTOM_REAL
+                 coef2 = deltat * 0.5_CUSTOM_REAL
               endif
 
               e11(i_sls,i,j,ispec) = coef0 * e11(i_sls,i,j,ispec) + &
@@ -162,7 +164,7 @@
 
             ! update e1, e11, e13 in ADE formation with LDDRK scheme
             ! evolution e1 ! no need since we are just considering shear attenuation
-            else if (time_stepping_scheme == 2) then
+            case (2)
               ! LDDRK
               e11_LDDRK(i,j,ispec,i_sls) = ALPHA_LDDRK(i_stage) * e11_LDDRK(i,j,ispec,i_sls) + &
                                            deltat * ((dux_dxl_n(i,j,ispec)-theta_n_u/TWO) * phinu2) - &
@@ -176,37 +178,51 @@
 
             ! update e1, e11, e13 in ADE formation with classical Runge-Kutta scheme
             ! evolution e1 ! no need since we are just considering shear attenuation
-            else if (time_stepping_scheme == 3) then
+            case (3)
               ! RK
-              e11_force_RK(i,j,ispec,i_sls,i_stage) = deltat * ((dux_dxl_n(i,j,ispec)-theta_n_u/TWO) * phinu2 - &
-                                                                 e11(i_sls,i,j,ispec) * tauinvnu2)
-              if (i_stage == 1 .or. i_stage == 2 .or. i_stage == 3) then
-                if (i_stage == 1)weight_rk = 0.5_CUSTOM_REAL
-                if (i_stage == 2)weight_rk = 0.5_CUSTOM_REAL
-                if (i_stage == 3)weight_rk = 1._CUSTOM_REAL
+              ! initial field
+              if (i_stage == 1) e11_initial_rk(i,j,ispec,i_sls) = e11(i_sls,i,j,ispec)
 
-                if (i_stage == 1) e11_initial_rk(i,j,ispec,i_sls) = e11(i_sls,i,j,ispec)
+              ! intermediate fields
+              e11_force_RK(i,j,ispec,i_sls,i_stage) = (dux_dxl_n(i,j,ispec)-theta_n_u/TWO) * phinu2 - &
+                                                          e11(i_sls,i,j,ispec) * tauinvnu2
+
+              if (i_stage == 1 .or. i_stage == 2 .or. i_stage == 3) then
+                ! note: this prepare the fields for the next stage, i.e., used at istage+1
+                weight_rk = ALPHA_RK4(i_stage+1) * deltat
                 e11(i_sls,i,j,ispec) = e11_initial_rk(i,j,ispec,i_sls) + weight_rk * e11_force_RK(i,j,ispec,i_sls,i_stage)
               else if (i_stage == 4) then
-                e11(i_sls,i,j,ispec) = e11_initial_rk(i,j,ispec,i_sls) + 1._CUSTOM_REAL / 6._CUSTOM_REAL * &
-                                       (e11_force_RK(i,j,ispec,i_sls,1) + 2._CUSTOM_REAL * e11_force_RK(i,j,ispec,i_sls,2) + &
-                                        2._CUSTOM_REAL * e11_force_RK(i,j,ispec,i_sls,3) + e11_force_RK(i,j,ispec,i_sls,4))
+                ! final update
+                e11(i_sls,i,j,ispec) = e11_initial_rk(i,j,ispec,i_sls) + deltat * &
+                                       (BETA_RK4(1) * e11_force_RK(i,j,ispec,i_sls,1) + &
+                                        BETA_RK4(2) * e11_force_RK(i,j,ispec,i_sls,2) + &
+                                        BETA_RK4(3) * e11_force_RK(i,j,ispec,i_sls,3) + &
+                                        BETA_RK4(4) * e11_force_RK(i,j,ispec,i_sls,4))
               endif
 
-              e13_force_RK(i,j,ispec,i_sls,i_stage) = deltat * ((dux_dzl_n(i,j,ispec) + duz_dxl_n(i,j,ispec))*phinu2 - &
-                                                                 e13(i_sls,i,j,ispec) * tauinvnu2)
+              ! initial field
+              if (i_stage == 1) e13_initial_rk(i,j,ispec,i_sls) = e13(i_sls,i,j,ispec)
+
+              ! intermediate fields
+              e13_force_RK(i,j,ispec,i_sls,i_stage) = (dux_dzl_n(i,j,ispec) + duz_dxl_n(i,j,ispec))*phinu2 - &
+                                                            e13(i_sls,i,j,ispec) * tauinvnu2
+
               if (i_stage == 1 .or. i_stage == 2 .or. i_stage == 3) then
-                if (i_stage == 1)weight_rk = 0.5_CUSTOM_REAL
-                if (i_stage == 2)weight_rk = 0.5_CUSTOM_REAL
-                if (i_stage == 3)weight_rk = 1._CUSTOM_REAL
-                if (i_stage == 1) e13_initial_rk(i,j,ispec,i_sls) = e13(i_sls,i,j,ispec)
+                ! note: this prepare the fields for the next stage, i.e., used at istage+1
+                weight_rk = ALPHA_RK4(i_stage+1) * deltat
                 e13(i_sls,i,j,ispec) = e13_initial_rk(i,j,ispec,i_sls) + weight_rk * e13_force_RK(i,j,ispec,i_sls,i_stage)
               else if (i_stage == 4) then
-                e13(i_sls,i,j,ispec) = e13_initial_rk(i,j,ispec,i_sls) + 1._CUSTOM_REAL / 6._CUSTOM_REAL * &
-                                       (e13_force_RK(i,j,ispec,i_sls,1) + 2._CUSTOM_REAL * e13_force_RK(i,j,ispec,i_sls,2) + &
-                                        2._CUSTOM_REAL * e13_force_RK(i,j,ispec,i_sls,3) + e13_force_RK(i,j,ispec,i_sls,4))
+                ! final update
+                e13(i_sls,i,j,ispec) = e13_initial_rk(i,j,ispec,i_sls) + deltat * &
+                                       (BETA_RK4(1) * e13_force_RK(i,j,ispec,i_sls,1) + &
+                                        BETA_RK4(2) * e13_force_RK(i,j,ispec,i_sls,2) + &
+                                        BETA_RK4(3) * e13_force_RK(i,j,ispec,i_sls,3) + &
+                                        BETA_RK4(4) * e13_force_RK(i,j,ispec,i_sls,4))
               endif
-            endif
+            case default
+              call stop_the_code('Error time scheme not implemented yet in compute_forces_poro_solid.f90')
+            end select
+
           enddo
         enddo; enddo
      endif
@@ -232,19 +248,6 @@
 !---
 
     if (.not. ispec_is_poroelastic(ispec)) cycle
-
-    ! get poroelastic parameters of current spectral element
-    call get_poroelastic_material(ispec,phi,tort,mu_s,kappa_s,rho_s,kappa_f,rho_f,eta_f,mu_fr,kappa_fr,rho_bar)
-
-    ! Biot coefficients for the input phi
-    call get_poroelastic_Biot_coeff(phi,kappa_s,kappa_f,kappa_fr,mu_fr,D_biot,H_biot,C_biot,M_biot)
-
-    !The RHS has the form : div T -phi/c div T_f + phi/ceta_fk^-1.partial t w
-    !where T = G:grad u_s + C_biot div w I
-    !and T_f = C_biot div u_s I + M_biot div w I
-    mu_G = mu_fr
-    lambdal_G = H_biot - 2._CUSTOM_REAL*mu_fr
-    lambdalplus2mul_G = lambdal_G + TWO*mu_G
 
     ! first double loop over GLL points to compute and store gradients
     do j = 1,NGLLZ
@@ -293,6 +296,23 @@
 
         dwz_dxl = dwz_dxi*xixl + dwz_dgamma*gammaxl
         dwz_dzl = dwz_dxi*xizl + dwz_dgamma*gammazl
+
+        ! get poroelastic parameters of current spectral element
+        phi = phistore(i,j,ispec)
+        kappa_s = kappaarraystore(1,i,j,ispec)
+        kappa_f = kappaarraystore(2,i,j,ispec)
+        kappa_fr = kappaarraystore(3,i,j,ispec)
+        mu_fr = mufr_store(i,j,ispec)
+
+        ! Biot coefficients for the input phi
+        call get_poroelastic_Biot_coeff(phi,kappa_s,kappa_f,kappa_fr,mu_fr,D_biot,H_biot,C_biot,M_biot)
+
+        !The RHS has the form : div T -phi/c div T_f + phi/ceta_fk^-1.partial t w
+        !where T = G:grad u_s + C_biot div w I
+        !and T_f = C_biot div u_s I + M_biot div w I
+        mu_G = mu_fr
+        lambdal_G = H_biot - 2._CUSTOM_REAL*mu_fr
+        lambdalplus2mul_G = lambdal_G + TWO*mu_G
 
         ! compute stress tensor (include attenuation or anisotropy if needed)
         if (ATTENUATION_VISCOELASTIC) then
@@ -414,6 +434,10 @@
     do j = 1,NGLLZ
       do i = 1,NGLLX
         iglob = ibool(i,j,ispec)
+
+        ! get poroelastic parameters of current spectral element
+        phi = phistore(i,j,ispec)
+        tort = tortstore(i,j,ispec)
 
         ! along x direction and z direction
         ! and assemble the contributions

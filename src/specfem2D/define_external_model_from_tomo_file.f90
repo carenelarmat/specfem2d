@@ -98,7 +98,9 @@ module interpolation
     double precision, intent(in) :: value
     double precision, intent(in), optional :: delta
     double precision :: d
-    integer :: index_closest = 1
+    integer :: index_closest
+
+    index_closest = 1
 
     if (present(delta)) then
       d = delta
@@ -155,6 +157,8 @@ module interpolation
     ! case 1 | case 5 | case 4
     ! Reference: http://en.wikipedia.org/wiki/Bilinear_interpolation
 
+    use constants, only: TINYVAL
+
     implicit none
 
     integer, intent(in) :: x_len, y_len
@@ -189,23 +193,36 @@ module interpolation
     ! ------------------------> x
     ! case 1 | case 5 | case 4
 
-    if (x <= minx .and. y <= miny) then ! case 1
+    ! case 1
+    !if (x <= minx .and. y <= miny) then
+    ! considers floating point round-off errors
+    if ( ((x < minx) .or. (abs(x-minx) < TINYVAL)) .and. ((y < miny) .or. (abs(y-miny) < TINYVAL)) ) then
       !print *,"case1"
       interpolate = f(1,1)
 
-    else if (x > maxx .and. y >= maxy) then ! case 2
+    ! case 2
+    !else if (x > maxx .and. y >= maxy) then
+    else if ( (x > maxx) .and. ((y > maxy) .or. (abs(y-maxy) < TINYVAL)) ) then
       !print *,"case2"
       interpolate = f(x_len,y_len)
 
-    else if (x <= minx .and. y >= maxy) then ! case 3
+    ! case 3
+    !else if (x <= minx .and. y >= maxy) then
+    else if ( ((x < minx) .or. (abs(x-minx) < TINYVAL)) .and. ((y > maxy) .or. (abs(y-maxy) < TINYVAL)) ) then
       !print *,"case3"
       interpolate = f(1,y_len)
 
-    else if (x >= maxx .and. y <= miny) then ! case 4
+    ! case 4
+    !else if (x >= maxx .and. y <= miny) then
+    else if ( ((x > maxx) .or. (abs(x-maxx) < TINYVAL)) .and. ((y < miny) .or. (abs(y-miny) < TINYVAL)) ) then
       !print *,"case4"
       interpolate = f(x_len,1)
 
-    else if (x >= minx .and. x <= maxx .and. y <= miny) then ! case 5
+    ! case 5
+    !else if (x >= minx .and. x <= maxx .and. y <= miny) then
+    else if ( ((x > minx) .or. (abs(x-minx) < TINYVAL)) .and. &
+              ((x < maxx) .or. (abs(x-maxx) < TINYVAL)) .and. &
+              ((y < miny) .or. (abs(y-miny) < TINYVAL)) ) then
       !print *,"case5"
       y1 = y_array(1)
       y2 = y_array(2)
@@ -222,7 +239,11 @@ module interpolation
       denom = (x2 - x1)*(y2 - y1)
       interpolate = (f(i,j)*(x2-x)*(y2-y1) + f(i+1,j)*(x-x1)*(y2-y1))/denom
 
-    else if (x >= minx .and. x <= maxx .and. y >= maxy) then ! case 6
+    ! case 6
+    !else if (x >= minx .and. x <= maxx .and. y >= maxy) then
+    else if ( ((x > minx) .or. (abs(x-minx) < TINYVAL)) .and. &
+              ((x < maxx) .or. (abs(x-maxx) < TINYVAL)) .and. &
+              ((y > maxy) .or. (abs(y-maxy) < TINYVAL)) ) then
       !print *,"case6"
       y1 = y_array(y_len-1)
       y2 = y_array(y_len)
@@ -239,7 +260,11 @@ module interpolation
       denom = (x2 - x1)*(y2 - y1)
       interpolate = (f(i,j+1)*(x2-x)*(y2-y1) + f(i+1, j+1)*(x-x1)*(y2-y1))/denom
 
-    else if (x <= minx .and. y >= miny .and. y <= maxy) then ! case 7
+    ! case 7
+    !else if (x <= minx .and. y >= miny .and. y <= maxy) then
+    else if ( ((x < minx) .or. (abs(x-minx) < TINYVAL)) .and. &
+              ((y > miny) .or. (abs(y-miny) < TINYVAL)) .and. &
+              ((y < maxy) .or. (abs(y-maxy) < TINYVAL)) ) then
       !print *,"case7"
       x1 = x_array(1)
       x2 = x_array(2)
@@ -256,7 +281,11 @@ module interpolation
       denom = (x2 - x1)*(y2 - y1)
       interpolate = (f(i,j)*(x2-x1)*(y2-y) + f(i,j+1)*(x2-x1)*(y-y1))/denom
 
-    else if (x >= maxx .and. y >= miny .and. y <= maxy) then ! case 8
+    ! case 8
+    !else if (x >= maxx .and. y >= miny .and. y <= maxy) then
+    else if ( ((x > maxx) .or. (abs(x-maxx) < TINYVAL)) .and. &
+              ((y > miny) .or. (abs(y-miny) < TINYVAL)) .and. &
+              ((y < maxy) .or. (abs(y-maxy) < TINYVAL)) ) then
       !print *,"case8"
       x1 = x_array(x_len-1)
       x2 = x_array(x_len)
@@ -273,7 +302,9 @@ module interpolation
       denom = (x2 - x1)*(y2 - y1)
       interpolate = (f(i+1,j)*(x2-x1)*(y2-y) + f(i+1,j+1)*(x2-x1)*(y-y1))/denom
 
-    else ! case 9 ! The point is exactly on the area defined
+    ! case 9
+    else
+      ! The point is exactly on the area defined
       !print *,"case9"
       i = searchInf(x_len, x_array, x) ! Test also if the array is increasing
       j = searchInf(y_len, y_array, y) ! Test also if the array is increasing
@@ -305,28 +336,33 @@ end module interpolation
 ! ----------------------------------------------------------------------------------------
 !
 
-  subroutine define_external_model_from_tomo_file()
+  subroutine define_external_model_from_tomo_file(rhoext,vpext,vsext, &
+                                                  QKappa_attenuationext,Qmu_attenuationext, &
+                                                  c11ext,c12ext,c13ext,c15ext,c22ext,c23ext,c25ext,c33ext,c35ext,c55ext)
 
 ! ----------------------------------------------------------------------------------------
 ! Read a tomo file and loop over all GLL points to set the values of vp,vs and rho
 ! ----------------------------------------------------------------------------------------
 
-  use specfem_par, only: tomo_material,coord,nspec,ibool,kmato,rhoext,vpext,vsext, &
-                       QKappa_attenuation,Qmu_attenuation,anisotropy, &
-                       QKappa_attenuationext,Qmu_attenuationext,poroelastcoef,density, &
-                       c11ext,c13ext,c15ext,c33ext,c35ext,c55ext,c12ext,c23ext,c25ext,c22ext
+  use specfem_par, only: tomo_material,coord,nspec,ibool,kmato, &
+                         QKappa_attenuationcoef,Qmu_attenuationcoef,anisotropycoef, &
+                         poroelastcoef,density
 
   use specfem_par, only: myrank,TOMOGRAPHY_FILE
 
   use model_tomography_par
   use interpolation
 
-  use constants, only: NGLLX,NGLLZ,TINYVAL,IMAIN
+  use constants, only: NGLLX,NGLLZ,TINYVAL,IMAIN,CUSTOM_REAL
 
   implicit none
 
-  ! local parameters
+  real(kind=CUSTOM_REAL), dimension(NGLLX,NGLLZ,nspec), intent(out) :: rhoext,vpext,vsext
+  real(kind=CUSTOM_REAL), dimension(NGLLX,NGLLZ,nspec), intent(out) :: QKappa_attenuationext,Qmu_attenuationext
+  real(kind=CUSTOM_REAL), dimension(NGLLX,NGLLZ,nspec), intent(out) :: c11ext,c12ext,c13ext,c15ext,c22ext,c23ext,c25ext, &
+                                                                       c33ext,c35ext,c55ext
 
+  ! local parameters
   integer :: i,j,ispec,iglob
   double precision :: xmesh,zmesh
 
@@ -353,7 +389,7 @@ end module interpolation
   c12ext(:,:,:) = 0.d0
   c23ext(:,:,:) = 0.d0
   c25ext(:,:,:) = 0.d0
-  c22ext(:,:,:) = 0.d0
+  c22ext(:,:,:) = 0.d0 ! for AXISYM only
 
   ! loop on all the elements of the mesh, and inside each element loop on all the GLL points
   do ispec = 1,nspec
@@ -376,39 +412,39 @@ end module interpolation
           poroelastcoef(2,1,kmato(ispec)) =  rhoext(i,j,ispec) * vsext(i,j,ispec) * vsext(i,j,ispec)
 
           !! ABAB : I do the same with anisotropy and attenuation even if I don't use them (for the future) :
-          anisotropy(1,kmato(ispec)) = c11ext(i,j,ispec)
-          anisotropy(2,kmato(ispec)) = c13ext(i,j,ispec)
-          anisotropy(3,kmato(ispec)) = c15ext(i,j,ispec)
-          anisotropy(4,kmato(ispec)) = c33ext(i,j,ispec)
-          anisotropy(5,kmato(ispec)) = c35ext(i,j,ispec)
-          anisotropy(6,kmato(ispec)) = c55ext(i,j,ispec)
-          anisotropy(7,kmato(ispec)) = c12ext(i,j,ispec)
-          anisotropy(8,kmato(ispec)) = c23ext(i,j,ispec)
-          anisotropy(9,kmato(ispec)) = c25ext(i,j,ispec)
-          anisotropy(10,kmato(ispec)) = c22ext(i,j,ispec)
+          anisotropycoef(1,kmato(ispec)) = c11ext(i,j,ispec)
+          anisotropycoef(2,kmato(ispec)) = c13ext(i,j,ispec)
+          anisotropycoef(3,kmato(ispec)) = c15ext(i,j,ispec)
+          anisotropycoef(4,kmato(ispec)) = c33ext(i,j,ispec)
+          anisotropycoef(5,kmato(ispec)) = c35ext(i,j,ispec)
+          anisotropycoef(6,kmato(ispec)) = c55ext(i,j,ispec)
+          anisotropycoef(7,kmato(ispec)) = c12ext(i,j,ispec)
+          anisotropycoef(8,kmato(ispec)) = c23ext(i,j,ispec)
+          anisotropycoef(9,kmato(ispec)) = c25ext(i,j,ispec)
+          anisotropycoef(10,kmato(ispec)) = c22ext(i,j,ispec) ! for AXISYM
 
-          QKappa_attenuation(kmato(ispec)) = QKappa_attenuationext(i,j,ispec)
-          Qmu_attenuation(kmato(ispec)) = Qmu_attenuationext(i,j,ispec)
+          QKappa_attenuationcoef(kmato(ispec)) = QKappa_attenuationext(i,j,ispec)
+          Qmu_attenuationcoef(kmato(ispec)) = Qmu_attenuationext(i,j,ispec)
         else
           ! Internal model
-           rhoext(i,j,ispec) = density(1,kmato(ispec))
-           vpext(i,j,ispec) = sqrt(poroelastcoef(3,1,kmato(ispec))/rhoext(i,j,ispec))
-           vsext(i,j,ispec) = sqrt(poroelastcoef(2,1,kmato(ispec))/rhoext(i,j,ispec))
+          rhoext(i,j,ispec) = density(1,kmato(ispec))
+          vpext(i,j,ispec) = sqrt(poroelastcoef(3,1,kmato(ispec))/rhoext(i,j,ispec))
+          vsext(i,j,ispec) = sqrt(poroelastcoef(2,1,kmato(ispec))/rhoext(i,j,ispec))
 
-           QKappa_attenuationext(i,j,ispec) = QKappa_attenuation(kmato(ispec))
-           Qmu_attenuationext(i,j,ispec) = Qmu_attenuation(kmato(ispec))
+          QKappa_attenuationext(i,j,ispec) = QKappa_attenuationcoef(kmato(ispec))
+          Qmu_attenuationext(i,j,ispec) = Qmu_attenuationcoef(kmato(ispec))
 
-           c11ext(i,j,ispec) = anisotropy(1,kmato(ispec))
-           c13ext(i,j,ispec) = anisotropy(2,kmato(ispec))
-           c15ext(i,j,ispec) = anisotropy(3,kmato(ispec))
-           c33ext(i,j,ispec) = anisotropy(4,kmato(ispec))
-           c35ext(i,j,ispec) = anisotropy(5,kmato(ispec))
-           c55ext(i,j,ispec) = anisotropy(6,kmato(ispec))
-           c12ext(i,j,ispec) = anisotropy(7,kmato(ispec))
-           c23ext(i,j,ispec) = anisotropy(8,kmato(ispec))
-           c25ext(i,j,ispec) = anisotropy(9,kmato(ispec))
-           c22ext(i,j,ispec) = anisotropy(10,kmato(ispec))
-         endif
+          c11ext(i,j,ispec) = anisotropycoef(1,kmato(ispec))
+          c13ext(i,j,ispec) = anisotropycoef(2,kmato(ispec))
+          c15ext(i,j,ispec) = anisotropycoef(3,kmato(ispec))
+          c33ext(i,j,ispec) = anisotropycoef(4,kmato(ispec))
+          c35ext(i,j,ispec) = anisotropycoef(5,kmato(ispec))
+          c55ext(i,j,ispec) = anisotropycoef(6,kmato(ispec))
+          c12ext(i,j,ispec) = anisotropycoef(7,kmato(ispec))
+          c23ext(i,j,ispec) = anisotropycoef(8,kmato(ispec))
+          c25ext(i,j,ispec) = anisotropycoef(9,kmato(ispec))
+          c22ext(i,j,ispec) = anisotropycoef(10,kmato(ispec)) ! for AXISYM
+        endif
       enddo
     enddo
   enddo

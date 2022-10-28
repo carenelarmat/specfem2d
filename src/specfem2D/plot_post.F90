@@ -37,10 +37,6 @@
 ! PostScript display routine
 !
 
-#ifdef USE_MPI
-  use mpi
-#endif
-
   use constants, only: IMAIN,NGLLX,NGLLZ,ARROW_ANGLE,ARROW_RATIO,CENTIM, &
     DISPLAY_PML_IN_DIFFERENT_COLOR,ICOLOR_FOR_PML_DISPLAY, &
     IEDGE1,IEDGE2,IEDGE3,IEDGE4, &
@@ -48,18 +44,26 @@
     ORIG_X,ORIG_Z,PI,RPERCENTX,RPERCENTZ,STABILITY_THRESHOLD, &
     DISPLAY_COLORS,DISPLAY_ELEMENT_NUMBERS_POSTSCRIPT,OUTPUT_FILES
 
-  use specfem_par, only: coord,vpext,x_source,z_source,st_xval,st_zval,it,deltat,coorg,density, &
+  use specfem_par, only: coord,x_source,z_source,st_xval,st_zval,it,DT,coorg, &
                          AXISYM,is_on_the_axis,flagrange_GLJ, &
-                         poroelastcoef,knods,kmato,ibool, &
-                         numabs,codeabs,typeabs,anyabs,nelem_acoustic_surface, acoustic_edges, &
+                         knods,kmato,ibool, &
+                         num_abs_boundary_faces,abs_boundary_ispec,codeabs,abs_boundary_type,anyabs, &
+                         nelem_acoustic_surface, acoustic_edges, &
                          nglob,nrec,NSOURCES, &
-                         assign_external_model,nelemabs,pointsdisp, &
-                         nspec,ngnod,coupled_acoustic_elastic,coupled_acoustic_poro,coupled_elastic_poro, &
+                         rhostore,rho_vpstore, &
+                         pointsdisp, &
+                         nspec,NGNOD,coupled_acoustic_elastic,coupled_acoustic_poro,coupled_elastic_poro, &
                          any_acoustic,any_poroelastic, &
                          fluid_solid_acoustic_ispec,fluid_solid_acoustic_iedge,num_fluid_solid_edges, &
                          fluid_poro_acoustic_ispec,fluid_poro_acoustic_iedge,num_fluid_poro_edges, &
                          solid_poro_poroelastic_ispec,solid_poro_poroelastic_iedge,num_solid_poro_edges, &
-                         ispec_is_poroelastic,myrank,NPROC
+                         myrank,NPROC
+
+  use shared_parameters, only: subsamp_postscript,imagetype_postscript,interpol, &
+    meshvect,modelvect, &
+    cutsnaps,sizemax_arrows, &
+    boundvect,plot_lowerleft_corner_only, &
+    US_LETTER
 
   ! PML arrays
   use specfem_par, only: PML_BOUNDARY_CONDITIONS,ispec_is_PML
@@ -67,8 +71,6 @@
   ! movie images
   use specfem_par_movie, only: vector_field_display,simulation_title, &
     xinterp,zinterp,Uxinterp,Uzinterp,flagrange,shape2D_display, &
-    subsamp_postscript,imagetype_postscript,interpol,meshvect,modelvect, &
-    cutsnaps,sizemax_arrows,boundvect,plot_lowerleft_corner_only, &
     vpImin,vpImax, &
     coorg_send_ps_velocity_model,RGB_send_ps_velocity_model, &
     coorg_recv_ps_velocity_model,RGB_recv_ps_velocity_model, &
@@ -76,7 +78,7 @@
     coorg_recv_ps_element_mesh,color_recv_ps_element_mesh, &
     coorg_send_ps_abs,coorg_recv_ps_abs, &
     coorg_send_ps_free_surface,coorg_recv_ps_free_surface, &
-    coorg_send_ps_vector_field,coorg_recv_ps_vector_field,US_LETTER
+    coorg_send_ps_vector_field,coorg_recv_ps_vector_field
 
   implicit none
 
@@ -101,19 +103,15 @@
 
   double precision, dimension(:,:), allocatable  :: coorg_send
   double precision, dimension(:,:), allocatable  :: coorg_recv
-  integer :: k,j,ispec,material,is,ir,imat,icol,l,line_length
+  integer :: k,j,ispec,is,ir,imat,icol,l,line_length
   integer :: index_char,ii,ipoin,in,nnum,inum,ideb,ifin,iedge
   integer :: ier
 
   ! for the file name
   character(len=100) :: file_name
   integer  :: buffer_offset, RGB_offset
-  double precision convert,x1,cpIloc,xa,za,xb,zb,lambdaplus2mu,denst
+  double precision convert,x1,cpIloc,xa,za,xb,zb
   double precision z1,x2,z2,d,d1,d2,dummy,theta,thetaup,thetadown
-  double precision :: cpIsquare
-
-  double precision :: phi,tort,mu_s,kappa_s,rho_s,kappa_f,rho_f,eta_f,mu_fr,kappa_fr,rho_bar
-  double precision :: D_biot,H_biot,C_biot,M_biot
 
   double precision ratio_page,dispmax,xmin,zmin
   logical :: anyabs_glob, coupled_acoustic_elastic_glob, coupled_acoustic_poro_glob, &
@@ -128,13 +126,12 @@
   equivalence (postscript_line,ch1)
   logical :: first
 
-  double precision :: afactor,bfactor,cfactor
   double precision :: xmax,zmax,height,xw,zw,usoffset,sizex,sizez,timeval
   ! for MPI collection
   double precision :: xmin_glob, xmax_glob, zmin_glob, zmax_glob
   double precision :: dispmax_glob
 
-#ifndef USE_MPI
+#ifndef WITH_MPI
 ! this to avoid warnings by the compiler about unused variables in the case
 ! of a serial code, therefore use them once and do nothing: just set them to zero
   nspec_recv = 0
@@ -309,7 +306,7 @@
     write(24,*) '%'
 
     write(24,*) '24. CM 1.95 CM MV'
-    timeval = it*deltat
+    timeval = it*DT
     if (timeval >= 1.d-3 .and. timeval < 1000.d0) then
       write(24,600) usoffset,timeval
     else
@@ -406,44 +403,9 @@
         do j = 1,NGLLX-subsamp_postscript,subsamp_postscript
 
           if ((vpImax-vpImin)/vpImin > 0.02d0) then
-
-            if (assign_external_model) then
-
-              x1 = (vpext(i,j,ispec)-vpImin) / (vpImax-vpImin)
-
-            else
-
-              material = kmato(ispec)
-
-              if (ispec_is_poroelastic(ispec)) then
-
-                ! poroelastic material
-
-                ! get elastic parameters of current spectral element
-                call get_poroelastic_material(ispec,phi,tort,mu_s,kappa_s,rho_s,kappa_f,rho_f,eta_f,mu_fr,kappa_fr,rho_bar)
-
-                ! Biot coefficients for the input phi
-                call get_poroelastic_Biot_coeff(phi,kappa_s,kappa_f,kappa_fr,mu_fr,D_biot,H_biot,C_biot,M_biot)
-
-                ! Approximated velocities (no viscous dissipation)
-                afactor = rho_bar - phi/tort*rho_f
-                bfactor = H_biot + phi*rho_bar/(tort*rho_f)*M_biot - 2.d0*phi/tort*C_biot
-                cfactor = phi/(tort*rho_f)*(H_biot*M_biot - C_biot*C_biot)
-                cpIsquare = (bfactor + sqrt(bfactor*bfactor - 4.d0*afactor*cfactor))/(2.d0*afactor)
-                cpIloc = sqrt(cpIsquare)
-
-              else
-
-                lambdaplus2mu  = poroelastcoef(3,1,material)
-                denst = density(1,material)
-                cpIloc = sqrt(lambdaplus2mu/denst)
-
-              endif
-
-              x1 = (cpIloc-vpImin) / (vpImax-vpImin)
-
-            endif
-
+            ! acoustic/elastic/poroelastic material property
+            cpIloc = rho_vpstore(i,j,ispec) / rhostore(i,j,ispec)
+            x1 = (cpIloc - vpImin) / (vpImax-vpImin)
           else
             x1 = 0.5d0
           endif
@@ -523,10 +485,10 @@
       enddo
     enddo
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     if (NPROC > 1) then
       if (myrank == 0) then
-        ! master collects
+        ! main collects
         do iproc = 1, NPROC-1
 
           call recv_singlei(nspec_recv, iproc, 42)
@@ -598,7 +560,7 @@
 
         xinterp(i,j) = 0.d0
         zinterp(i,j) = 0.d0
-        do in = 1,ngnod
+        do in = 1,NGNOD
           nnum = knods(in,ispec)
           xinterp(i,j) = xinterp(i,j) + shape2D_display(in,i,j)*coorg(1,nnum)
           zinterp(i,j) = zinterp(i,j) + shape2D_display(in,i,j)*coorg(2,nnum)
@@ -653,7 +615,7 @@
       coorg_send_ps_element_mesh(2,buffer_offset) = z1
     endif
 
-    if (ngnod == 4) then
+    if (NGNOD == 4) then
 
       ! draw straight lines if elements have 4 nodes
 
@@ -851,10 +813,10 @@
 
   enddo ! ispec
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
   if (NPROC > 1) then
     if (myrank == 0) then
-      ! master collects
+      ! main collects
       do iproc = 1, NPROC-1
         call recv_singlei(nspec_recv,iproc,43)
 
@@ -862,7 +824,7 @@
         if (DISPLAY_ELEMENT_NUMBERS_POSTSCRIPT == 1) then
           nb_coorg_per_elem = nb_coorg_per_elem + 1
         endif
-        if (ngnod == 4) then
+        if (NGNOD == 4) then
           nb_coorg_per_elem = nb_coorg_per_elem + 4
         else
           nb_coorg_per_elem = nb_coorg_per_elem + 3*(pointsdisp-1)+(pointsdisp-2)
@@ -889,7 +851,7 @@
           buffer_offset = buffer_offset + 1
           write(24,*) 'mark'
           write(24,681) coorg_recv_ps_element_mesh(1,buffer_offset), coorg_recv_ps_element_mesh(2,buffer_offset)
-          if (ngnod == 4) then
+          if (NGNOD == 4) then
             buffer_offset = buffer_offset + 1
             write(24,681) coorg_recv_ps_element_mesh(1,buffer_offset), coorg_recv_ps_element_mesh(2,buffer_offset)
             buffer_offset = buffer_offset + 1
@@ -954,7 +916,7 @@
       if (DISPLAY_ELEMENT_NUMBERS_POSTSCRIPT == 1) then
         nb_coorg_per_elem = nb_coorg_per_elem + 1
       endif
-      if (ngnod == 4) then
+      if (NGNOD == 4) then
         nb_coorg_per_elem = nb_coorg_per_elem + 4
       else
         nb_coorg_per_elem = nb_coorg_per_elem + 3*(pointsdisp-1)+(pointsdisp-2)
@@ -995,8 +957,8 @@
     buffer_offset = 0
 
     if (anyabs) then
-      do inum = 1,nelemabs
-        ispec = numabs(inum)
+      do inum = 1,num_abs_boundary_faces
+        ispec = abs_boundary_ispec(inum)
 
         do iedge = 1,4
 
@@ -1033,13 +995,13 @@
 
             if (myrank == 0) then
             ! draw the Stacey absorbing boundary line segment in different colors depending on its type
-              if (typeabs(inum) == IBOTTOM) then
+              if (abs_boundary_type(inum) == IBOTTOM) then
                 write(24,*) '0 1 0 RG'  ! green
-              else if (typeabs(inum) == IRIGHT) then
+              else if (abs_boundary_type(inum) == IRIGHT) then
                 write(24,*) '0 0 1 RG'  ! blue
-              else if (typeabs(inum) == ITOP) then
+              else if (abs_boundary_type(inum) == ITOP) then
                 write(24,*) '1 0.7529 0.7960 RG' ! pink
-              else if (typeabs(inum) == ILEFT) then
+              else if (abs_boundary_type(inum) == ILEFT) then
                 write(24,*) '1 0.6470 0 RG' ! orange
               else
                 call exit_MPI(myrank,'Wrong absorbing boundary code')
@@ -1051,7 +1013,7 @@
               coorg_send_ps_abs(2,buffer_offset) = z1
               coorg_send_ps_abs(3,buffer_offset) = x2
               coorg_send_ps_abs(4,buffer_offset) = z2
-              coorg_send_ps_abs(5,buffer_offset) = typeabs(inum)
+              coorg_send_ps_abs(5,buffer_offset) = abs_boundary_type(inum)
             endif
 
           endif ! of if (codeabs(iedge,inum))
@@ -1060,10 +1022,10 @@
       enddo
     endif ! anyabs
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     if (NPROC > 1) then
       if (myrank == 0) then
-        ! master collects
+        ! main collects
         do iproc = 1, NPROC-1
           call recv_singlei(nspec_recv,iproc, 44)
           if (nspec_recv > 0) then
@@ -1148,10 +1110,10 @@
     enddo
   endif
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
   if (NPROC > 1) then
     if (myrank == 0) then
-      ! master collects
+      ! main collects
       do iproc = 1, NPROC-1
         call recv_singlei(nspec_recv, iproc, 44)
         if (nspec_recv > 0) then
@@ -1246,10 +1208,10 @@
 
     enddo
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     if (NPROC > 1) then
       if (myrank == 0) then
-        ! master collects
+        ! main collects
         do iproc = 1, NPROC-1
           call recv_singlei(nspec_recv, iproc, 45)
           if (nspec_recv > 0) then
@@ -1347,10 +1309,10 @@
 
     enddo
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     if (NPROC > 1) then
       if (myrank == 0) then
-        ! master collects
+        ! main collects
         do iproc = 1, NPROC-1
           call recv_singlei(nspec_recv, iproc, 45)
           if (nspec_recv > 0) then
@@ -1449,10 +1411,10 @@
 
     enddo
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     if (NPROC > 1) then
       if (myrank == 0) then
-        ! master collects
+        ! main collects
         do iproc = 1, NPROC-1
           call recv_singlei(nspec_recv, iproc, 45)
           if (nspec_recv > 0) then
@@ -1532,7 +1494,7 @@
     do ispec = 1,nspec
 
 ! interpolation on a uniform grid
-#ifdef USE_MPI
+#ifdef WITH_MPI
       if (myrank == 0 .and. mod(ispec,1000) == 0) &
         write(IMAIN,*) '  Interpolation uniform grid element ',ispec,' on processor core 0'
 #else
@@ -1545,7 +1507,7 @@
 
           xinterp(i,j) = 0.d0
           zinterp(i,j) = 0.d0
-          do in = 1,ngnod
+          do in = 1,NGNOD
             nnum = knods(in,ispec)
             xinterp(i,j) = xinterp(i,j) + shape2D_display(in,i,j)*coorg(1,nnum)
             zinterp(i,j) = zinterp(i,j) + shape2D_display(in,i,j)*coorg(2,nnum)
@@ -1650,9 +1612,9 @@
 
     enddo ! ispec
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     if (myrank == 0) then
-      ! master collects
+      ! main collects
       do iproc = 1, NPROC-1
         call recv_singlei(nspec_recv, iproc, 46)
         if (nspec_recv > 0) then
@@ -1782,9 +1744,9 @@
 
     enddo
 
-#ifdef USE_MPI
+#ifdef WITH_MPI
     if (myrank == 0) then
-      ! master collects
+      ! main collects
       do iproc = 1, NPROC-1
         call recv_singlei(nspec_recv, iproc, 47)
 

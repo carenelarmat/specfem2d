@@ -40,25 +40,28 @@
   ! 'nelmnts' is the number of elements, 'nnodes' is the number of nodes in the mesh.
   !-----------------------------------------------
 
-  subroutine read_external_mesh_file(filename, remove_min_to_start_at_zero, ngnod)
+  subroutine read_external_mesh_file(filename, remove_min_to_start_at_zero, NGNOD)
 
-  use constants, only: MAX_STRING_LEN,IMAIN
+  use constants, only: MAX_STRING_LEN,IMAIN,myrank
   use part_unstruct_par, only: elmnts,nelmnts,nnodes
 
   implicit none
 
   character(len=MAX_STRING_LEN), intent(in)  :: filename
   integer, intent(out)  :: remove_min_to_start_at_zero
-  integer, intent(in)  :: ngnod
+  integer, intent(in)  :: NGNOD
 
   integer  :: i,ier
 
   ! user output
-  write(IMAIN,*)
-  write(IMAIN,*) 'Reading data from external mesh file: ',trim(filename)
-  call flush_IMAIN()
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading data from external mesh file: ',trim(filename)
+    write(IMAIN,*) '    NGNOD = ',NGNOD
+    call flush_IMAIN()
+  endif
 
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
+  ! note: adding access='stream' would further decrease file size
   open(unit=990, file=trim(filename), form='unformatted' , status='old', action='read',iostat=ier)
 #else
   open(unit=990, file=trim(filename), form='formatted' , status='old', action='read',iostat=ier)
@@ -74,40 +77,55 @@
   read(990,*) nelmnts
 #endif
 
-  allocate(elmnts(0:ngnod*nelmnts-1))
+  allocate(elmnts(0:NGNOD*nelmnts-1),stat=ier)
+  if (ier /= 0) call stop_the_code('Error allocating elmnts array')
+  elmnts(:) = -1
 
   do i = 0, nelmnts-1
-    if (ngnod == 4) then
+    if (NGNOD == 4) then
+      ! linear elements
+      ! 4 corner nodal points
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
-      read(990) elmnts(i*ngnod), elmnts(i*ngnod+1), elmnts(i*ngnod+2), elmnts(i*ngnod+3)
+      read(990) elmnts(i*NGNOD), elmnts(i*NGNOD+1), elmnts(i*NGNOD+2), elmnts(i*NGNOD+3)
 #else
-      read(990,*) elmnts(i*ngnod), elmnts(i*ngnod+1), elmnts(i*ngnod+2), elmnts(i*ngnod+3)
+      read(990,*) elmnts(i*NGNOD), elmnts(i*NGNOD+1), elmnts(i*NGNOD+2), elmnts(i*NGNOD+3)
 #endif
-    else if (ngnod == 9) then
+    else if (NGNOD == 9) then
+      ! quadratic elements
+      ! 4 corners + 4 edge mid-points + 1 center nodal point
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
-      read(990) elmnts(i*ngnod), elmnts(i*ngnod+1), elmnts(i*ngnod+2), elmnts(i*ngnod+3), &
-                  elmnts(i*ngnod+4), elmnts(i*ngnod+5), elmnts(i*ngnod+6), elmnts(i*ngnod+7), elmnts(i*ngnod+8)
+      read(990) elmnts(i*NGNOD), elmnts(i*NGNOD+1), elmnts(i*NGNOD+2), elmnts(i*NGNOD+3), &
+                  elmnts(i*NGNOD+4), elmnts(i*NGNOD+5), elmnts(i*NGNOD+6), elmnts(i*NGNOD+7), elmnts(i*NGNOD+8)
 #else
-      read(990,*) elmnts(i*ngnod), elmnts(i*ngnod+1), elmnts(i*ngnod+2), elmnts(i*ngnod+3), &
-                  elmnts(i*ngnod+4), elmnts(i*ngnod+5), elmnts(i*ngnod+6), elmnts(i*ngnod+7), elmnts(i*ngnod+8)
+      read(990,*) elmnts(i*NGNOD), elmnts(i*NGNOD+1), elmnts(i*NGNOD+2), elmnts(i*NGNOD+3), &
+                  elmnts(i*NGNOD+4), elmnts(i*NGNOD+5), elmnts(i*NGNOD+6), elmnts(i*NGNOD+7), elmnts(i*NGNOD+8)
 #endif
     else
-      call stop_the_code('error, ngnod should be either 4 or 9 for external meshes')
+      call stop_the_code('error, NGNOD should be either 4 or 9 for external meshes')
     endif
   enddo
 
   close(990)
 
-  remove_min_to_start_at_zero = minval(elmnts)
+  remove_min_to_start_at_zero = minval(elmnts(:))
+
+  ! checks if we missed some elements
+  if (remove_min_to_start_at_zero == -1) then
+    print *,'Error: reading elements ',nelmnts,': mesh has missing nodal points. please check NGNOD setting...'
+    call stop_the_code('Invalid mesh with missing nodal points')
+  endif
+
   elmnts(:) = elmnts(:) - remove_min_to_start_at_zero
 
   nnodes = maxval(elmnts) + 1
 
   ! user output
-  write(IMAIN,*) 'Total number of spectral elements   :',nelmnts
-  write(IMAIN,*)
-  call flush_IMAIN()
-
+  if (myrank == 0) then
+    write(IMAIN,*) '    Total number of spectral elements   :',nelmnts
+    write(IMAIN,*) '    Total number of nodal points        :',nnodes
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
 
   end subroutine read_external_mesh_file
 
@@ -121,7 +139,7 @@
 
   subroutine read_external_materials_file(filename)
 
-  use constants, only: MAX_STRING_LEN
+  use constants, only: MAX_STRING_LEN,IMAIN,myrank
 
   use part_unstruct_par, only: nelmnts
   use shared_parameters, only: num_material
@@ -133,6 +151,13 @@
   ! local parameters
   integer  :: i,ier
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading materials from external mesh file: ',trim(filename)
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
+
   ! assigns materials to mesh elements
   allocate(num_material(nelmnts),stat=ier)
   if (ier /= 0) call stop_the_code('Error allocating num_material array')
@@ -140,6 +165,7 @@
 
   ! file input
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
+  ! note: adding access='stream' would further decrease file size
   open(unit=992, file=trim(filename), form='unformatted' , status='old', action='read',iostat=ier)
 #else
   open(unit=992, file=trim(filename), form='formatted' , status='old', action='read',iostat=ier)
@@ -173,7 +199,7 @@
 
   subroutine read_external_pml_element(filename, region_pml_external_mesh, nspec_cpml)
 
-  use constants, only: MAX_STRING_LEN,CPML_X_ONLY,CPML_Z_ONLY,CPML_XZ
+  use constants, only: MAX_STRING_LEN,CPML_X_ONLY,CPML_Z_ONLY,CPML_XZ,IMAIN,myrank
   use part_unstruct_par, only: nelmnts
   use compute_elements_load_par, only: is_pml
 
@@ -185,7 +211,14 @@
 
   integer  :: i,ier,ispec,pml_flag
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading PML elements from external mesh file: ',trim(filename)
+    call flush_IMAIN()
+  endif
+
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
+  ! note: adding access='stream' would further decrease file size
   open(unit=992, file=trim(filename), form='unformatted' , status='old', action='read',iostat=ier)
 #else
   open(unit=992, file=trim(filename), form='formatted' , status='old', action='read',iostat=ier)
@@ -203,18 +236,26 @@
 
   do i = 1, nspec_cpml
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
-     read(992) ispec, pml_flag
+    read(992) ispec, pml_flag
 #else
-     read(992,*) ispec, pml_flag
+    read(992,*) ispec, pml_flag
 #endif
-     if (pml_flag /= CPML_X_ONLY .and. pml_flag /= CPML_Z_ONLY .and. pml_flag /= CPML_XZ) &
-       call stop_the_code('error: incorrect CPML element flag found, should be CPML_X_ONLY or CPML_Z_ONLY or CPML_XZ only')
+    if (pml_flag /= CPML_X_ONLY .and. pml_flag /= CPML_Z_ONLY .and. pml_flag /= CPML_XZ) &
+      call stop_the_code('error: incorrect CPML element flag found, should be CPML_X_ONLY or CPML_Z_ONLY or CPML_XZ only')
 
-     region_pml_external_mesh(ispec) = pml_flag
-     is_pml(ispec-1) = .true.
+    ! stores element
+    region_pml_external_mesh(ispec) = pml_flag
+    is_pml(ispec-1) = .true.
   enddo
 
   close(992)
+
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '    Total number of PML elements: ',nspec_cpml
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
 
   end subroutine read_external_pml_element
 
@@ -228,7 +269,7 @@
 
   subroutine read_external_mesh_nodes_coords(filename)
 
-  use constants, only: MAX_STRING_LEN
+  use constants, only: MAX_STRING_LEN,IMAIN,myrank
   use part_unstruct_par, only: nodes_coords,nnodes
 
   implicit none
@@ -237,7 +278,14 @@
 
   integer  :: i,ier
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading node coords from external mesh file: ',trim(filename)
+    call flush_IMAIN()
+  endif
+
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
+  ! note: adding access='stream' would further decrease file size
   open(unit=991, file=trim(filename), form='unformatted' , status='old', action='read', iostat=ier)
 #else
   open(unit=991, file=trim(filename), form='formatted' , status='old', action='read', iostat=ier)
@@ -265,6 +313,15 @@
   enddo
   close(991)
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '    node coords: X min/max = ',minval(nodes_coords(1,:)),"/",maxval(nodes_coords(1,:))
+    write(IMAIN,*) '                 Z min/max = ',minval(nodes_coords(2,:)),"/",maxval(nodes_coords(2,:))
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
+
+
   end subroutine read_external_mesh_nodes_coords
 
 !
@@ -281,7 +338,7 @@
   subroutine read_external_acoustic_surface(filename, num_material, &
                                             nbmodels, icodemat, phi_material, remove_min_to_start_at_zero)
 
-  use constants, only: MAX_STRING_LEN,ANISOTROPIC_MATERIAL
+  use constants, only: MAX_STRING_LEN,ANISOTROPIC_MATERIAL,IMAIN,myrank
   use part_unstruct_par, only: nelmnts,nelem_acoustic_surface,acoustic_surface
 
   implicit none
@@ -299,8 +356,14 @@
   integer  :: i,ier
   integer  :: imaterial_number
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading acoustic surface from external mesh file: ',trim(filename)
+    call flush_IMAIN()
+  endif
 
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
+  ! note: adding access='stream' would further decrease file size
   open(unit=993, file=trim(filename), form='unformatted' , status='old', action='read', iostat=ier)
 #else
   open(unit=993, file=trim(filename), form='formatted' , status='old', action='read', iostat=ier)
@@ -352,6 +415,14 @@
      endif
   enddo
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Total number of surface elements         : ',nelmnts_surface
+    write(IMAIN,*) '  Total number of acoustic surface elements: ',nelem_acoustic_surface
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
+
   end subroutine read_external_acoustic_surface
 
 !
@@ -367,7 +438,7 @@
   !-----------------------------------------------
   subroutine read_external_abs_surface(filename, remove_min_to_start_at_zero)
 
-  use constants, only: MAX_STRING_LEN
+  use constants, only: MAX_STRING_LEN,IMAIN,myrank
   use part_unstruct_par, only: abs_surface,nelemabs
 
   implicit none
@@ -377,7 +448,14 @@
 
   integer  :: i,ier
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading absorbing surface from external mesh file: ',trim(filename)
+    call flush_IMAIN()
+  endif
+
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
+  ! note: adding access='stream' would further decrease file size
   open(unit=994, file=trim(filename), form='unformatted' , status='old', action='read', iostat=ier)
 #else
   open(unit=994, file=trim(filename), form='formatted' , status='old', action='read', iostat=ier)
@@ -427,6 +505,14 @@
   abs_surface(3,:) = abs_surface(3,:) - remove_min_to_start_at_zero
   abs_surface(4,:) = abs_surface(4,:) - remove_min_to_start_at_zero
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '    Total number of absorbing surface elements: ',nelemabs
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
+
+
   end subroutine read_external_abs_surface
 
 !
@@ -443,7 +529,7 @@
 
   subroutine read_external_acoustic_forcing_surface(filename, remove_min_to_start_at_zero)
 
-  use constants, only: MAX_STRING_LEN
+  use constants, only: MAX_STRING_LEN,IMAIN,myrank
   use part_unstruct_par, only: acforcing_surface,nelemacforcing
 
   implicit none
@@ -453,7 +539,14 @@
 
   integer  :: i,ier
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading acoustic forcing surface from external mesh file: ',trim(filename)
+    call flush_IMAIN()
+  endif
+
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
+  ! note: adding access='stream' would further decrease file size
   open(unit=995, file=trim(filename), form='unformatted' , status='old', action='read', iostat=ier)
 #else
   open(unit=995, file=trim(filename), form='formatted' , status='old', action='read', iostat=ier)
@@ -505,6 +598,14 @@
   acforcing_surface(3,:) = acforcing_surface(3,:) - remove_min_to_start_at_zero
   acforcing_surface(4,:) = acforcing_surface(4,:) - remove_min_to_start_at_zero
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '    Total number of acoustic forcing surface elements: ',nelemacforcing
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
+
+
   end subroutine read_external_acoustic_forcing_surface
 
 !
@@ -518,26 +619,33 @@
   ! 'axial_elements' contains the list of the ispec corresponding to axial elements
   !-----------------------------------------------
 
-  subroutine read_external_axial_elements_file(axial_elements_file,remove_min_to_start_at_zero)
+  subroutine read_external_axial_elements_file(filename,remove_min_to_start_at_zero)
 
-  use constants, only: MAX_STRING_LEN,IMAIN
+  use constants, only: MAX_STRING_LEN,IMAIN,myrank
   use part_unstruct_par, only: ispec_of_axial_elements,nelem_on_the_axis,inode1_axial_elements,inode2_axial_elements
 
   implicit none
 
-  character(len=MAX_STRING_LEN), intent(in)  :: axial_elements_file
+  character(len=MAX_STRING_LEN), intent(in)  :: filename
   integer, intent(in)  :: remove_min_to_start_at_zero
 
   integer :: i,j,ier
   integer :: dump
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading axial elements from external mesh file: ',trim(filename)
+    call flush_IMAIN()
+  endif
+
 #ifdef USE_BINARY_FOR_EXTERNAL_MESH_DATABASE
-  open(unit=994, file=trim(axial_elements_file), form='unformatted' , status='old', action='read', iostat=ier)
+  ! note: adding access='stream' would further decrease file size
+  open(unit=994, file=trim(filename), form='unformatted' , status='old', action='read', iostat=ier)
 #else
-  open(unit=994, file=trim(axial_elements_file), form='formatted' , status='old', action='read', iostat=ier)
+  open(unit=994, file=trim(filename), form='formatted' , status='old', action='read', iostat=ier)
 #endif
   if (ier /= 0) then
-    print *,'Error opening file: ',trim(axial_elements_file)
+    print *,'Error opening file: ',trim(filename)
     call stop_the_code('Error read axial elements file')
   endif
 
@@ -588,30 +696,45 @@
   inode1_axial_elements(:) = inode1_axial_elements(:) - remove_min_to_start_at_zero
   inode2_axial_elements(:) = inode2_axial_elements(:) - remove_min_to_start_at_zero
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '    Total number of axial elements: ',nelem_on_the_axis
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
+
+
   end subroutine read_external_axial_elements_file
 
 !
 !---------------------------------------------------------------------------------------
 !
 
-  subroutine read_external_tangential_curve_file()
+  subroutine read_external_tangential_curve_file(filename)
 
 ! reads in tangential detection curve file
 
-  use constants, only: IIN
+  use constants, only: MAX_STRING_LEN,IIN,IMAIN,myrank
 
   use part_unstruct_par, only: nnodes_tangential_curve,nodes_tangential_curve
-  use shared_parameters, only: tangential_detection_curve_file
 
   implicit none
+
+  character(len=MAX_STRING_LEN),intent(in) :: filename
 
   ! local parameters
   integer :: i,ier
 
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '  Reading tangential curve from external mesh file: ',trim(filename)
+    call flush_IMAIN()
+  endif
+
   ! reads in specified external file
-  open(unit=IIN,file=trim(tangential_detection_curve_file),status='old',action='read',iostat=ier)
+  open(unit=IIN,file=trim(filename),status='old',action='read',iostat=ier)
   if (ier /= 0) then
-    print *,'Error opening file: ',trim(tangential_detection_curve_file)
+    print *,'Error opening file: ',trim(filename)
     call stop_the_code('Error read tangential curve file')
   endif
 
@@ -624,6 +747,13 @@
     read(IIN,*) nodes_tangential_curve(1,i), nodes_tangential_curve(2,i)
   enddo
   close(IIN)
+
+  ! user output
+  if (myrank == 0) then
+    write(IMAIN,*) '    Total number of tangential curve nodes: ',nnodes_tangential_curve
+    write(IMAIN,*)
+    call flush_IMAIN()
+  endif
 
   end subroutine read_external_tangential_curve_file
 

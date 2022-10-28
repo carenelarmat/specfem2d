@@ -31,21 +31,15 @@
 !
 !========================================================================
 
+
   subroutine iterate_time_undoatt()
 
-#ifdef USE_MPI
-  use mpi
-#endif
-
-  use constants, only: IMAIN, APPROXIMATE_HESS_KL,USE_A_STRONG_FORMULATION_FOR_E1
+  use constants, only: IMAIN, USE_A_STRONG_FORMULATION_FOR_E1
   use specfem_par
-  use specfem_par_noise, only: NOISE_TOMOGRAPHY
   use specfem_par_gpu, only: Mesh_pointer
-  implicit none
+  use specfem_par_movie, only: MOVIE_SIMULATION
 
-#ifdef USE_MPI
-  include "precision.h"
-#endif
+  implicit none
 
   ! local parameters
   real(kind=CUSTOM_REAL), dimension(:,:), allocatable :: b_potential_acoustic_buffer
@@ -54,7 +48,6 @@
 
   integer :: it_temp,iframe_kernel,nframes_kernel,size_buffer
   integer :: ier
-  integer, parameter :: it_begin = 1
 
   ! time
   character(len=8) :: datein
@@ -62,7 +55,10 @@
   character(len=5) :: zone
   integer, dimension(8) :: time_values
   integer :: year,mon,day,hr,minutes,timestamp
-  real :: start_time_of_time_loop,finish_time_of_time_loop,duration_of_time_loop_in_seconds
+
+  ! timing
+  double precision, external :: wtime
+  double precision :: start_time_of_time_loop,duration_of_time_loop_in_seconds
   logical :: compute_b_wavefield
 
   ! checks if anything to do
@@ -102,26 +98,26 @@
 ! *********************************************************
 
   ! safety checks
-  if (GPU_MODE .and. ATTENUATION_VISCOELASTIC) call exit_MPI(myrank,'for undo_attenuation, &
-                                              & GPU_MODE does not support ATTENUATION_VISCOELASTIC')
-  if (time_stepping_scheme /= 1) call exit_MPI(myrank,'for undo_attenuation, only Newmark scheme has implemented ')
-  if (any_poroelastic) call exit_MPI(myrank,'undo_attenuation has not implemented for poroelastic simulation yet')
-  if (NOISE_TOMOGRAPHY /= 0) call exit_MPI(myrank,'for undo_attenuation, NOISE_TOMOGRAPHY is not supported')
-  if (AXISYM) call exit_MPI(myrank,'Just axisymmetric FORWARD simulations are possible so far')
+  if (GPU_MODE .and. ATTENUATION_VISCOELASTIC) &
+    call exit_MPI(myrank,'For UNDO_ATTENUATION, GPU_MODE does not support ATTENUATION_VISCOELASTIC')
+  if (any_poroelastic) &
+    call exit_MPI(myrank,'UNDO_ATTENUATION is not implemented for poroelastic simulation yet')
+  if (NOISE_TOMOGRAPHY /= 0) &
+    call exit_MPI(myrank,'For UNDO_ATTENUATION, NOISE_TOMOGRAPHY is not supported')
   if (ATTENUATION_VISCOACOUSTIC .and. .not. USE_A_STRONG_FORMULATION_FOR_E1) &
-    call exit_MPI(myrank,'for undo_attenuation with viscoacousticity, &
+    call exit_MPI(myrank,'For UNDO_ATTENUATION with viscoacousticity, &
                  & USE_A_STRONG_FORMULATION_FOR_E1 has to be set to true (in setup/constants.h)')
-  if (NOISE_TOMOGRAPHY == 3) call stop_the_code('Undo_attenuation for noise kernels not implemented yet')
-
+  if (NOISE_TOMOGRAPHY == 3) &
+    call stop_the_code('UNDO_ATTENUATION for noise kernels not implemented yet')
 
   ! number of time subsets for time loop
   NSUBSET_ITERATIONS = ceiling( dble(NSTEP)/dble(NT_DUMP_ATTENUATION) )
 
   ! get the maximum number of frames to save
-  if (NSTEP_BETWEEN_COMPUTE_KERNELS == 1) then
+  if (NTSTEP_BETWEEN_COMPUTE_KERNELS == 1) then
     size_buffer = NT_DUMP_ATTENUATION
   else
-    size_buffer = NT_DUMP_ATTENUATION / NSTEP_BETWEEN_COMPUTE_KERNELS + 1
+    size_buffer = NT_DUMP_ATTENUATION / NTSTEP_BETWEEN_COMPUTE_KERNELS + 1
   endif
 
   ! checks
@@ -154,25 +150,13 @@
     if (any_acoustic) then
       allocate(b_potential_acoustic_buffer(nglob,size_buffer),stat=ier)
       if (ier /= 0 ) call exit_MPI(myrank,'error allocating b_potential_acoustic')
-      allocate(b_e1_acous_sf(N_SLS,NGLLX,NGLLZ,nspec_ATT_ac),b_sum_forces_old(NGLLX,NGLLZ,nspec_ATT_ac),stat=ier)
-      if (ier /= 0) call stop_the_code('Error allocating acoustic attenuation arrays')
     endif
-
     if (any_elastic) then
       allocate(b_displ_elastic_buffer(NDIM,nglob,size_buffer),stat=ier)
       if (ier /= 0 ) call exit_MPI(myrank,'error allocating b_displ_elastic')
       if (APPROXIMATE_HESS_KL) allocate(b_accel_elastic_buffer(NDIM,nglob,size_buffer),stat=ier)
       if (ier /= 0 ) call exit_MPI(myrank,'error allocating b_accel_elastic')
-
-      allocate(b_e1(N_SLS,NGLLX,NGLLZ,nspec_ATT_el), &
-               b_e11(N_SLS,NGLLX,NGLLZ,nspec_ATT_el), &
-               b_e13(N_SLS,NGLLX,NGLLZ,nspec_ATT_el), &
-               b_dux_dxl_old(NGLLX,NGLLZ,nspec_ATT_el), &
-               b_duz_dzl_old(NGLLX,NGLLZ,nspec_ATT_el), &
-               b_dux_dzl_plus_duz_dxl_old(NGLLX,NGLLZ,nspec_ATT_el),stat=ier)
-      if (ier /= 0) call stop_the_code('Error allocating attenuation arrays')
     endif
-
   endif
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -187,8 +171,12 @@
     call flush_IMAIN()
   endif
 
+  ! time loop increments begin/end
+  it_begin = 1
+  it_end = NSTEP
+
   ! initialize variables for writing seismograms
-  seismo_offset = it_begin-1
+  seismo_offset = it_begin - 1
   seismo_current = 0
 
   ! *********************************************************
@@ -196,9 +184,10 @@
   ! *********************************************************
 
   ! initializes time increments
-  it = 0
+  it = it_begin - 1
 
-  call cpu_time(start_time_of_time_loop)
+  ! timing
+  start_time_of_time_loop = wtime()
 
   ! loops over time subsets
   do iteration_on_subset = 1, NSUBSET_ITERATIONS
@@ -233,46 +222,107 @@
       ! subset loop
       ! We don't compute the forward reconstructed wavefield in the loop below
       compute_b_wavefield = .false.
+
       do it_of_this_subset = 1, it_subset_end
 
         it = it + 1
         ! compute current time
-        timeval = (it-1) * deltat
+        current_timeval = (it-1) * DT
 
         ! display time step and max of norm of displacement
-        if (mod(it,NSTEP_BETWEEN_OUTPUT_INFO) == 0 .or. it == 5 .or. it == NSTEP) call check_stability()
+        if (mod(it,NTSTEP_BETWEEN_OUTPUT_INFO) == 0 .or. it == 5 .or. it == NSTEP) call check_stability()
 
-        do i_stage = 1, stage_time_scheme ! is equal to 1 if Newmark because only one stage then
-          ! update_displacement_newmark
-          if (GPU_MODE) then
-            if (any_acoustic) call update_displacement_newmark_GPU_acoustic(compute_b_wavefield)
-          else
-            call update_displ_acoustic_forward()
-          endif
-          call update_displ_elastic_forward()
+        do i_stage = 1, NSTAGE_TIME_SCHEME ! is equal to 1 if Newmark because only one stage then
+
+          ! update displacement
+          select case(time_stepping_scheme)
+          case (1)
+            ! Newmark
+            if (any_acoustic) then
+              if (GPU_MODE) then
+                call update_displacement_newmark_GPU_acoustic(compute_b_wavefield)
+              else
+                call update_displ_acoustic_forward()
+              endif
+            endif
+            if (any_elastic) then
+              call update_displ_elastic_forward()
+            endif
+            if (any_poroelastic) then
+              call update_displ_poroelastic_forward()
+            endif
+
+          case (2,3)
+            ! LDDRK, RK4
+            if (any_acoustic) then
+              if (.not. GPU_MODE) potential_dot_dot_acoustic(:) = 0._CUSTOM_REAL
+            endif
+            if (any_elastic) then
+              if (.not. GPU_MODE) accel_elastic(:,:) = 0._CUSTOM_REAL
+            endif
+            if (any_poroelastic) then
+              if (.not. GPU_MODE) then
+                accels_poroelastic(:,:) = 0._CUSTOM_REAL
+                accelw_poroelastic(:,:) = 0._CUSTOM_REAL
+              endif
+            endif
+
+          case (4)
+            ! symplectic PEFRL
+            if (any_acoustic) then
+              call update_displ_symplectic_acoustic_forward()
+            endif
+            if (any_elastic) then
+              call update_displ_symplectic_elastic_forward()
+            endif
+            if (any_poroelastic) then
+              call update_displ_symplectic_poroelastic_forward()
+            endif
+
+          case default
+            call stop_the_code('Error time scheme for update displacement not implemented yet in iterate_time_undoatt()')
+          end select
 
           ! acoustic domains
           if (any_acoustic) then
             if (.not. GPU_MODE) then
               call compute_forces_viscoacoustic_main()
-            else ! on GPU
+            else
+              ! on GPU
               call compute_forces_viscoacoustic_GPU(compute_b_wavefield)
             endif
           endif
 
           ! elastic domains
-          if (any_elastic) call compute_forces_viscoelastic_main()
+          if (any_elastic) then
+            if (.not. GPU_MODE) then
+              call compute_forces_viscoelastic_main()
+            else
+              ! on GPU
+              call compute_forces_viscoelastic_GPU(compute_b_wavefield)
+            endif
+          endif
 
+          if (any_poroelastic) call exit_MPI(myrank,'UNDO_ATTENUATION is not implemented for poroelastic simulation yet')
         enddo ! i_stage
 
         ! computes kinetic and potential energy
-        if (OUTPUT_ENERGY .and. mod(it,NTSTEP_BETWEEN_OUTPUT_ENERGY) == 0) call compute_and_output_energy()
+        if (OUTPUT_ENERGY) then
+          call compute_and_output_energy()
+        endif
 
         ! loop on all the receivers to compute and store the seismograms
         call write_seismograms()
 
         ! display results at given time steps
-        call write_movie_output(compute_b_wavefield)
+        if (MOVIE_SIMULATION) then
+          call write_movie_output(compute_b_wavefield)
+        endif
+
+        ! first step of noise tomography, i.e., save a surface movie at every time step
+        if (NOISE_TOMOGRAPHY == 1) then
+          call noise_save_surface_movie()
+        endif
 
       enddo ! subset loop
 
@@ -306,31 +356,75 @@
         it = it + 1
         ! We compute the forward reconstructed wavefield first
         compute_b_wavefield = .true.
-        do i_stage = 1, stage_time_scheme
+
+        do i_stage = 1, NSTAGE_TIME_SCHEME
           ! backward_inner_loop
-          ! update_displacement_newmark
-          if (GPU_MODE) then
-            if (any_acoustic) call update_displacement_newmark_GPU_acoustic(compute_b_wavefield)
-          else
-            call update_displ_Newmark_backward()
-          endif
+          ! update displacement
+          select case(time_stepping_scheme)
+          case (1)
+            ! Newmark
+            if (GPU_MODE) then
+              if (any_acoustic) call update_displacement_newmark_GPU_acoustic(compute_b_wavefield)
+            else
+              call update_displ_Newmark_backward()
+            endif
+
+          case (2,3)
+            ! LDDRK, RK4
+            if (any_acoustic) then
+              if (.not. GPU_MODE) b_potential_dot_dot_acoustic(:) = 0._CUSTOM_REAL
+            endif
+            if (any_elastic) then
+              if (.not. GPU_MODE) b_accel_elastic(:,:) = 0._CUSTOM_REAL
+            endif
+            if (any_poroelastic) then
+              if (.not. GPU_MODE) then
+                b_accels_poroelastic(:,:) = 0._CUSTOM_REAL
+                b_accelw_poroelastic(:,:) = 0._CUSTOM_REAL
+              endif
+            endif
+
+          case (4)
+            ! symplectic PEFRL
+            if (any_acoustic) then
+              call update_displ_symplectic_acoustic_backward()
+            endif
+            if (any_elastic) then
+              call update_displ_symplectic_elastic_backward()
+            endif
+            if (any_poroelastic) then
+              call update_displ_symplectic_poroelastic_backward()
+            endif
+
+          case default
+            call stop_the_code('Error time scheme for update displacement not implemented yet in iterate_time_undoatt()')
+          end select
 
           ! acoustic domains
           if (any_acoustic) then
             if (.not. GPU_MODE) then
               call compute_forces_viscoacoustic_main_backward()
-            else ! on GPU
+            else
+              ! on GPU
               call compute_forces_viscoacoustic_GPU(compute_b_wavefield)
             endif
           endif
 
           ! elastic domains
-          if (any_elastic) call compute_forces_viscoelastic_main_backward()
+          if (any_elastic) then
+            if (.not. GPU_MODE) then
+              call compute_forces_viscoelastic_main_backward()
+            else
+              ! on GPU
+              call compute_forces_viscoelastic_GPU(compute_b_wavefield)
+            endif
+          endif
 
+          if (any_poroelastic) call exit_MPI(myrank,'UNDO_ATTENUATION is not implemented for poroelastic simulation yet')
         enddo
 
         ! stores wavefield in buffers
-        if (mod(NSTEP-it+1,NSTEP_BETWEEN_COMPUTE_KERNELS) == 0) then
+        if (mod(NSTEP-it+1,NTSTEP_BETWEEN_COMPUTE_KERNELS) == 0) then
 
           iframe_kernel = iframe_kernel + 1
 
@@ -350,7 +444,9 @@
         endif
 
         ! display results at given time steps
-        call write_movie_output(compute_b_wavefield)
+        if (MOVIE_SIMULATION) then
+          call write_movie_output(compute_b_wavefield)
+        endif
 
       enddo ! subset loop
 
@@ -358,11 +454,12 @@
       it = it_temp
       nframes_kernel = iframe_kernel
       iframe_kernel = 0
+
       ! adjoint wavefield simulation
       do it_of_this_subset = 1, it_subset_end
 
         it = it + 1
-        if (mod(it,NSTEP_BETWEEN_COMPUTE_KERNELS) == 0) then
+        if (mod(it,NTSTEP_BETWEEN_COMPUTE_KERNELS) == 0) then
 
           iframe_kernel = iframe_kernel + 1
 
@@ -385,55 +482,107 @@
             endif
           endif
 
-        endif ! mod(it,NSTEP_BETWEEN_COMPUTE_KERNELS) == 0
+        endif ! mod(it,NTSTEP_BETWEEN_COMPUTE_KERNELS) == 0
 
         ! compute current time
-        timeval = (it-1) * deltat
+        current_timeval = (it-1) * DT
 
         ! display time step and max of norm of displacement
-        if ((.not. GPU_MODE) .and. mod(it,NSTEP_BETWEEN_OUTPUT_INFO) == 0 .or. it == 5 .or. it == NSTEP) then
+        if ((.not. GPU_MODE) .and. mod(it,NTSTEP_BETWEEN_OUTPUT_INFO) == 0 .or. it == 5 .or. it == NSTEP) then
           call check_stability()
         endif
 
         ! we only compute the adjoint wavefield on the next loop
         compute_b_wavefield = .false.
-        do i_stage = 1, stage_time_scheme
+
+        do i_stage = 1, NSTAGE_TIME_SCHEME
           ! adjoint
-          ! update_displacement_newmark
-          if (GPU_MODE) then
-            if (any_acoustic) call update_displacement_newmark_GPU_acoustic(compute_b_wavefield)
-          else
-            call update_displ_acoustic_forward()
-          endif
+          ! update displacement
+          select case(time_stepping_scheme)
+          case (1)
+            ! Newmark
+            if (any_acoustic) then
+              if (GPU_MODE) then
+                call update_displacement_newmark_GPU_acoustic(compute_b_wavefield)
+              else
+                call update_displ_acoustic_forward()
+              endif
+            endif
+            if (any_elastic) then
+              call update_displ_elastic_forward()
+            endif
+            if (any_poroelastic) then
+              call update_displ_poroelastic_forward()
+            endif
+          case (2,3)
+            ! LDDRK, RK4
+            if (any_acoustic) then
+              if (.not. GPU_MODE) potential_dot_dot_acoustic(:) = 0._CUSTOM_REAL
+            endif
+            if (any_elastic) then
+              if (.not. GPU_MODE) accel_elastic(:,:) = 0._CUSTOM_REAL
+            endif
+            if (any_poroelastic) then
+              if (.not. GPU_MODE) then
+                accels_poroelastic(:,:) = 0._CUSTOM_REAL
+                accelw_poroelastic(:,:) = 0._CUSTOM_REAL
+              endif
+            endif
 
-          if (any_acoustic) then
-            !ZN here we remove the trick introduced by Luoyang to stabilized the adjoint simulation
-            !ZN However in order to keep the current code be consistent, we still keep potential_acoustic_adj_coupling
-            !ZN the final goal should remove the *adj_coupling
-            potential_acoustic_adj_coupling(:) = potential_acoustic(:)
-          endif
+          case (4)
+            ! symplectic PEFRL
+            if (any_acoustic) then
+              call update_displ_symplectic_acoustic_forward()
+            endif
+            if (any_elastic) then
+              call update_displ_symplectic_elastic_forward()
+            endif
+            if (any_poroelastic) then
+              call update_displ_symplectic_poroelastic_forward()
+            endif
 
-          call update_displ_elastic_forward()
+          case default
+            call stop_the_code('Error time scheme for update displacement not implemented yet in iterate_time_undoatt()')
+          end select
 
-!daniel TODO: not sure if the following below is correct or needs to switch orders
-!             usually one computes first the updated pressure and afterwards computes the elastic domain
-!             and its coupling terms...please make sure...
+          ! not needed anymore, taking care of by re-ordering domain updates
+          !if (any_acoustic) then
+          !  !ZN here we remove the trick introduced by Luoyang to stabilized the adjoint simulation
+          !  !ZN However in order to keep the current code be consistent, we still keep potential_acoustic_adj_coupling
+          !  !ZN the final goal should remove the *adj_coupling
+          !  potential_acoustic_adj_coupling(:) = potential_acoustic(:)
+          !endif
+
+          ! note: for adjoint wavefields, the coupling terms change and the order of the domain updates should be:
+          !       1. elastic domain (and/or poroelastic domain)
+          !       2. acoustic domain
+
+          if (any_poroelastic) call exit_MPI(myrank,'UNDO_ATTENUATION is not implemented for poroelastic simulation yet')
 
           ! main solver for the elastic elements
-          if (any_elastic) call compute_forces_viscoelastic_main()
+          if (any_elastic) then
+            if (.not. GPU_MODE) then
+              call compute_forces_viscoelastic_main()
+            else
+              ! on GPU
+              call compute_forces_viscoelastic_GPU(compute_b_wavefield)
+            endif
+          endif
 
           ! for coupling with adjoint wavefields, stores temporary old wavefield
-          if (coupled_acoustic_elastic) then
-            ! handles adjoint runs coupling between adjoint potential and adjoint elastic wavefield
-            ! adjoint definition: \partial_t^2 \bfs^\dagger = - \frac{1}{\rho} \bfnabla \phi^\dagger
-            accel_elastic_adj_coupling(:,:) = - accel_elastic(:,:)
-          endif
+          ! not needed anymore, taking care of by re-ordering domain updates
+          !if (coupled_acoustic_elastic) then
+          !  ! handles adjoint runs coupling between adjoint potential and adjoint elastic wavefield
+          !  ! adjoint definition: \partial_t^2 \bfs^\dagger = - \frac{1}{\rho} \bfnabla \phi^\dagger
+          !  accel_elastic_adj_coupling(:,:) = - accel_elastic(:,:)
+          !endif
 
           ! acoustic domains
           if (any_acoustic) then
             if (.not. GPU_MODE) then
               call compute_forces_viscoacoustic_main()
-            else ! on GPU
+            else
+              ! on GPU
               call compute_forces_viscoacoustic_GPU(compute_b_wavefield)
             endif
           endif
@@ -441,16 +590,20 @@
         enddo !i_stage
 
         ! computes kinetic and potential energy
-        if (OUTPUT_ENERGY .and. mod(it,NTSTEP_BETWEEN_OUTPUT_ENERGY) == 0) call compute_and_output_energy()
+        if (OUTPUT_ENERGY) then
+          call compute_and_output_energy()
+        endif
 
         ! loop on all the receivers to compute and store the seismograms
         !call write_seismograms()
 
         ! kernels calculation
-        if (mod(it,NSTEP_BETWEEN_COMPUTE_KERNELS) == 0) call compute_kernels()
+        call compute_kernels()
 
         ! display results at given time steps
-        call write_movie_output(compute_b_wavefield)
+        if (MOVIE_SIMULATION) then
+          call write_movie_output(compute_b_wavefield)
+        endif
 
       enddo ! subset loop
     end select ! SIMULATION_TYPE
@@ -461,18 +614,18 @@
   !---- end of time iteration loop
   !
 
-  call cpu_time(finish_time_of_time_loop)
   if (myrank == 0) then
-    duration_of_time_loop_in_seconds = finish_time_of_time_loop - start_time_of_time_loop
+    duration_of_time_loop_in_seconds = wtime() - start_time_of_time_loop
+
     write(IMAIN,*)
-    write(IMAIN,*) 'Total duration of the time loop in seconds = ',duration_of_time_loop_in_seconds,' s'
+    write(IMAIN,*) 'Total duration of the time loop in seconds = ',sngl(duration_of_time_loop_in_seconds),' s'
     write(IMAIN,*) 'Total number of time steps = ',NSTEP
-    write(IMAIN,*) 'Average duration of a time step of the time loop = ',duration_of_time_loop_in_seconds / real(NSTEP),' s'
+    write(IMAIN,*) 'Average duration of a time step of the time loop = ',sngl(duration_of_time_loop_in_seconds / NSTEP),' s'
     write(IMAIN,*) 'Total number of spectral elements in the mesh = ',NSPEC
     write(IMAIN,*) '    of which ',NSPEC - count(ispec_is_PML),' are regular elements'
     write(IMAIN,*) '    and ',count(ispec_is_PML),' are PML elements.'
     write(IMAIN,*) 'Average duration of the calculation per spectral element = ', &
-                         duration_of_time_loop_in_seconds / real(NSTEP * NSPEC),' s'
+                         sngl(duration_of_time_loop_in_seconds / (NSTEP * NSPEC)),' s'
     write(IMAIN,*)
     call flush_IMAIN()
   endif
@@ -485,12 +638,10 @@
   if (SIMULATION_TYPE == 3) then
     if (any_acoustic) then
       deallocate(b_potential_acoustic_buffer)
-      deallocate(b_e1_acous_sf,b_sum_forces_old)
     endif
     if (any_elastic) then
       deallocate(b_displ_elastic_buffer)
       if (APPROXIMATE_HESS_KL) deallocate(b_accel_elastic_buffer)
-      deallocate(b_e1,b_e11,b_e13,b_dux_dxl_old,b_duz_dzl_old,b_dux_dzl_plus_duz_dxl_old)
     endif
   endif
 
